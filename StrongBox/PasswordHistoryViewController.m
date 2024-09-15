@@ -3,13 +3,13 @@
 //  StrongBox
 //
 //  Created by Mark on 29/05/2017.
-//  Copyright © 2017 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import "PasswordHistoryViewController.h"
 #import "PreviousPasswordsTableViewController.h"
 #import "Alerts.h"
-#import "Settings.h"
+//#import "Settings.h"
 
 @interface PasswordHistoryViewController()
 
@@ -70,15 +70,7 @@
 }
 
 - (void)save {
-    self.saveFunction(self.model, ^(NSError *error) {
-        if (error) {
-            [Alerts error:self
-                    title:NSLocalizedString(@"pw_history_vc_error_problem_saving", @"Problem Saving Database")
-                    error:error];
-        }
-        
-        [self bindToModel];
-    });
+    self.saveFunction(self.model);
 }
 
 - (void)bindToModel {    
@@ -114,7 +106,7 @@
     }
 }
 
-// In a storyboard-based application, you will often want to do a little preparation before navigation
+
 - (void)prepareForSegue:(UIStoryboardSegue *)segue sender:(id)sender {
     if ([segue.identifier isEqual:@"segueToPreviousPasswords"]) {
         PreviousPasswordsTableViewController *vc = segue.destinationViewController;

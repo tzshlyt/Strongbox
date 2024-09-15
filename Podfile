@@ -1,66 +1,156 @@
 workspace 'StrongBox'
 
-target 'Strongbox' do
-    project 'macbox/MacBox.xcodeproj'
-    platform :osx, '10.9'
-    use_frameworks!
+use_frameworks!
 
-    pod 'KissXML'
-    pod 'SAMKeychain'
-    pod 'libsodium'
-    pod 'Base32'
-end
-
-pre_install do |installer|
-    pod_targets = installer.pod_targets.flat_map do |pod_target|
-        pod_target.name == "SVProgressHUD" ? pod_target.scoped : pod_target
-    end
-    installer.aggregate_targets.each do |aggregate_target|
-        aggregate_target.pod_targets = pod_targets.select do |pod_target|
-            pod_target.target_definitions.include?(aggregate_target.target_definition)
-        end
-    end
+abstract_target 'common-mac' do
+  project 'macbox/MacBox.xcodeproj'
+  platform :osx, '12.0'
+  
+  pod 'SwiftCBOR'
+  
+  target 'Mac-Freemium' do
+    pod 'GoogleAPIClientForREST/Drive'
+    pod 'GoogleSignIn'
+    pod 'ObjectiveDropboxOfficial'
+  end
+  
+  target 'Mac-Pro' do
+    pod 'GoogleAPIClientForREST/Drive'
+    pod 'GoogleSignIn'
+    pod 'ObjectiveDropboxOfficial'
+  end
+  
+  target 'Mac-Unified-Freemium' do
+    pod 'GoogleAPIClientForREST/Drive'
+    pod 'GoogleSignIn'
+    pod 'ObjectiveDropboxOfficial'
+  end
+  
+  target 'Mac-Unified-Pro' do
+    pod 'GoogleAPIClientForREST/Drive'
+    pod 'GoogleSignIn'
+    pod 'ObjectiveDropboxOfficial'
+  end
+  
+  target 'Mac-Graphene' do
+    
+  end
+  
+  target 'Mac-Business' do
+    pod 'GoogleAPIClientForREST/Drive'
+    pod 'GoogleSignIn'
+    pod 'ObjectiveDropboxOfficial'
+  end
+  
+  target 'Mac-Freemium-AutoFill' do
+  end
+  
+  target 'Mac-Unified-Freemium-AutoFill' do
+  end
+  
+  target 'Mac-Unified-Pro-AutoFill' do
+  end
+  
+  target 'Mac-Pro-AutoFill' do
+  end
+  
+  target 'Mac-Graphene-AutoFill' do
+  end
+  
+  target 'Mac-Business-AutoFill' do
+  end
 end
 
 abstract_target 'common-ios' do
     project 'Strongbox.xcodeproj'
-    platform :ios, '9.2'
-    use_frameworks!
-
-    #pod 'NMSSH'
-    pod 'GoogleAPIClientForREST/Drive'
-    pod 'GoogleSignIn'
-    pod 'JNKeychain'
-    pod 'ObjectiveDropboxOfficial'
-    pod 'DZNEmptyDataSet'
-    pod 'Reachability'
-    pod 'libsodium'    
-    pod 'KissXML'
-    pod 'Base32'
-
+    platform :ios, '15.0'
+    
+    pod 'SwiftCBOR'
+    
     target 'Strongbox-iOS' do
-	use_frameworks!
-        
         pod 'ISMessages'
-        pod 'SVProgressHUD' 
-        pod 'OneDriveSDK'
-        pod 'MTBBarcodeScanner'
+        pod 'ObjectiveDropboxOfficial'
+        pod 'GoogleAPIClientForREST/Drive'
+        pod 'GoogleSignIn'
     end
 
-   target 'Strongbox Auto Fill' do
-       pod 'SVProgressHUD'
-   end
+    target 'Strongbox-iOS-Pro' do
+        pod 'ISMessages'
+        pod 'ObjectiveDropboxOfficial'
+        pod 'GoogleAPIClientForREST/Drive'
+        pod 'GoogleSignIn'
+    end
+
+    target 'Strongbox-iOS-Business' do
+      pod 'ISMessages'
+      pod 'ObjectiveDropboxOfficial'
+      pod 'GoogleAPIClientForREST/Drive'
+      pod 'GoogleSignIn'
+    end
+
+    target 'Strongbox-iOS-SCOTUS' do
+        pod 'ISMessages'
+    end    
+
+    target 'Strongbox-iOS-Graphene' do
+        pod 'ISMessages'
+    end  
+
+    target 'Strongbox-Auto-Fill' do
+
+    end
+
+    target 'Strongbox-Auto-Fill-Pro' do
+
+    end
+
+    target 'Strongbox-Auto-Fill-Business' do
+      
+    end
+    
+    target 'Strongbox-Auto-Fill-SCOTUS' do 
+
+    end
+
+    target 'Strongbox-Auto-Fill-Graphene' do 
+    
+    end
 end
 
+# XCode 14 issue...
+# From: https://github.com/fastlane/fastlane/issues/20670
+# Also: https://support.bitrise.io/hc/en-us/articles/4406551563409-CocoaPods-frameworks-signing-issue
+
 post_install do |installer|
-    installer.pods_project.targets.each do |target|
-        #puts "#{target.name}"
-        if target.name == "SVProgressHUD-Pods-common-ios-Strongbox Auto Fill"
-            puts "Adding SV_APP_EXTENSIONS"    
-            target.build_configurations.each do |config|
-                config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] ||= ['$(inherited)']
-                config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] << 'SV_APP_EXTENSIONS'
-            end
+  installer.pods_project.targets.each do |target|
+    target.build_configurations.each do |config|
+      if target.respond_to?(:product_type) and target.product_type == "com.apple.product-type.bundle"
+        target.build_configurations.each do |config|
+          config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
         end
+      end
     end
+  end
+  
+  #  Fix XCode 14.3 Issue
+  
+  installer.generated_projects.each do |project|
+    project.targets.each do |target|
+      target.build_configurations.each do |config|
+        config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '14.0'
+        config.build_settings['MACOSX_DEPLOYMENT_TARGET'] = '11.0'
+      end
+    end
+  end
+  
+  # Fix XCode 15 issues
+
+  installer.pods_project.targets.each do |target|
+      target.build_configurations.each do |config|
+      xcconfig_path = config.base_configuration_reference.real_path
+      xcconfig = File.read(xcconfig_path)
+      xcconfig_mod = xcconfig.gsub(/DT_TOOLCHAIN_DIR/, "TOOLCHAIN_DIR")
+      File.open(xcconfig_path, "w") { |file| file << xcconfig_mod }
+      end
+  end
 end

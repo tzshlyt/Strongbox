@@ -3,7 +3,7 @@
 //  Strongbox
 //
 //  Created by Mark on 26/10/2018.
-//  Copyright © 2018 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import "KdbxSerializationCommon.h"
@@ -14,22 +14,25 @@
 #import <CommonCrypto/CommonCryptor.h>
 #import "KeePassConstants.h"
 #import "KeePassCiphers.h"
-#import "KeePassXmlParserDelegate.h"
+#import "KeePassXmlParser.h"
+#include <libxml/parser.h>
+#import "NSData+Extensions.h"
+#import "NSArray+Extensions.h"
 
 static const BOOL kLogVerbose = NO;
 
 @implementation KdbxSerializationCommon
 
-BOOL keePass2SignatureAndVersionMatch(NSData * candidate, uint32_t majorVersion, uint32_t minorVersion, NSError** error) {
-    return keePassSignatureAndVersionMatch(candidate, majorVersion, minorVersion, error);
+BOOL keePass2SignatureAndVersionMatch(NSData * prefix, uint32_t majorVersion, uint32_t minorVersion, NSError** error) {
+    return keePassSignatureAndVersionMatch(prefix, majorVersion, minorVersion, error);
 }
 
-BOOL keePassSignatureAndVersionMatch(NSData * candidate, uint32_t majorVersion, uint32_t minorVersion, NSError** error) {
-    if(candidate == nil) {
+BOOL keePassSignatureAndVersionMatch(NSData * prefix, uint32_t majorVersion, uint32_t minorVersion, NSError** error) {
+    if(prefix == nil) {
         return NO;
     }
     
-    if(candidate.length < SIZE_OF_KEEPASS_HEADER) {
+    if(prefix.length < SIZE_OF_KEEPASS_HEADER) {
         if(error) {
             *error = [Utils createNSError:@"candidate.length < SIZE_OF_KEEPASS_HEADER" errorCode:-1];
         }
@@ -37,17 +40,17 @@ BOOL keePassSignatureAndVersionMatch(NSData * candidate, uint32_t majorVersion, 
         return NO;
     }
     
-    KeepassFileHeader header = getKeePassFileHeader(candidate);
+    KeepassFileHeader header = getKeePassFileHeader(prefix);
     
-    // https://gist.github.com/msmuenchen/9318327
     
-    //[0x03,0xD9,0xA2,0x9A];
+    
+    
     
     if (header.signature1[0] != 0x03 ||
         header.signature1[1] != 0xD9 ||
         header.signature1[2] != 0xA2 ||
         header.signature1[3] != 0x9A) {
-        //NSLog(@"No Keepass magic");
+        
         if(error) {
             *error = [Utils createNSError:@"No Keepass magic [0x03,0xD9,0xA2,0x9A]" errorCode:-1];
         }
@@ -55,14 +58,14 @@ BOOL keePassSignatureAndVersionMatch(NSData * candidate, uint32_t majorVersion, 
         return NO;
     }
     
-    // 0xB54BFB67 - * for kdbx file of KeePass 2.x pre-release (alpha & beta) : 0xB54BFB66 ,
-    // * for kdbx file of KeePass post-release : 0xB54BFB67 .
+    
+    
     
     if (header.signature2[0] != 0x67 ||
         header.signature2[1] != 0xFB ||
         header.signature2[2] != 0x4B ||
         header.signature2[3] != 0xB5) {
-        //NSLog(@"No Keepass magic 2");
+        
         if(error) {
             *error = [Utils createNSError:@"No Keepass magic: 0xB54BFB67" errorCode:-1];
         }
@@ -70,9 +73,10 @@ BOOL keePassSignatureAndVersionMatch(NSData * candidate, uint32_t majorVersion, 
         return NO;
     }
     
-    if(header.major != majorVersion || header.minor != minorVersion) {
+    if(header.major != majorVersion || header.minor > minorVersion) {
         if(error) {
-            *error = [Utils createNSError:@"KeePass Version MisMatch" errorCode:-1];
+            NSString* message = [NSString stringWithFormat:@"KeePass(%d.%d) Version MisMatch ", header.major, header.minor];
+            *error = [Utils createNSError:message errorCode:-1];
         }
         
         return NO;
@@ -118,29 +122,29 @@ NSObject* getHeaderEntryObject(uint8_t identifier, NSData* data) {
             break;
         case CIPHERID:
             if(length != 16) {
-                NSLog(@"WARN: CIPHERID entry length != 4. Unexpected. Skipping.");
+                slog(@"WARN: CIPHERID entry length != 4. Unexpected. Skipping.");
                 return nil;
             }
             else {
                 if(kLogVerbose) {
-                    NSLog(@"CIPHERID UUIDString: [%@]", [[NSUUID alloc] initWithUUIDBytes:data.bytes].UUIDString);
+                    slog(@"CIPHERID UUIDString: [%@]", [[NSUUID alloc] initWithUUIDBytes:data.bytes].UUIDString);
                 }
                 return data;
             }
             break;
         case COMPRESSIONFLAGS:
             if(length != 4) {
-                NSLog(@"WARN: COMPRESSIONFLAGS entry length != 4. Unexpected. Skipping.");
+                slog(@"WARN: COMPRESSIONFLAGS entry length != 4. Unexpected. Skipping.");
                 return nil;
             }
             else {
-                NSNumber *compressionFlags = [NSNumber numberWithInt:littleEndian4BytesToInt32((uint8_t*)data.bytes)];
+                NSNumber *compressionFlags = [NSNumber numberWithUnsignedInt:littleEndian4BytesToUInt32((uint8_t*)data.bytes)];
                 return compressionFlags;
             }
             break;
         case MASTERSEED:
             if(length != kMasterSeedLength) {
-                NSLog(@"WARN: MASTERSEED entry length != 32. Unexpected. Skipping. Almost certainly lead to issues.");
+                slog(@"WARN: MASTERSEED entry length != 32. Unexpected. Skipping. Almost certainly lead to issues.");
                 return nil;
             }
             else {
@@ -149,30 +153,30 @@ NSObject* getHeaderEntryObject(uint8_t identifier, NSData* data) {
             break;
         case TRANSFORMROUNDS:
             if(length != 8) {
-                NSLog(@"WARN: TRANSFORMROUNDS entry length != 8. Unexpected. Skipping.");
+                slog(@"WARN: TRANSFORMROUNDS entry length != 8. Unexpected. Skipping.");
                 return nil;
             }
             else {
-                NSNumber *transformRounds = [NSNumber numberWithLongLong:littleEndian8BytesToInt64((uint8_t*)data.bytes)];
+                NSNumber *transformRounds = [NSNumber numberWithUnsignedLongLong:littleEndian8BytesToUInt64((uint8_t*)data.bytes)];
                 return transformRounds;
             }
             break;
         case INNERRANDOMSTREAMID:
             if(length != 4) {
-                NSLog(@"WARN: INNERRANDOMSTREAMID entry length != 4. Unexpected. Skipping.");
+                slog(@"WARN: INNERRANDOMSTREAMID entry length != 4. Unexpected. Skipping.");
                 return nil;
             }
             else {
-                NSNumber *innerRandomStreamId = [NSNumber numberWithInt:littleEndian4BytesToInt32((uint8_t*)data.bytes)];
+                NSNumber *innerRandomStreamId = [NSNumber numberWithUnsignedInt:littleEndian4BytesToUInt32((uint8_t*)data.bytes)];
                 return innerRandomStreamId;
             }
             break;
         case KDFPARAMETERS:
-            //NSLog(@"KDFPARAMS (b64): [%@]", [data base64EncodedStringWithOptions:kNilOptions]);
+            
             return [VariantDictionary fromData:data];
             break;
         default:
-            NSLog(@"Found unknown header entry type: [%d] of length [%zu]", identifier, length);
+            slog(@"Found unknown header entry type: [%d] of length [%zu]", identifier, length);
             return data;
             break;
     }
@@ -180,7 +184,7 @@ NSObject* getHeaderEntryObject(uint8_t identifier, NSData* data) {
 
 void dumpHeaderEntries(NSDictionary *headerEntries) {
     for (NSNumber* identifier in headerEntries.allKeys) {
-        NSLog(@"HDR: [%@] => [%@]", headerEntryIdentifierString(identifier.integerValue), [headerEntries objectForKey:identifier]);
+        slog(@"HDR: [%@] => [%@]", headerEntryIdentifierString(identifier.integerValue), [headerEntries objectForKey:identifier]);
     }
 }
 
@@ -227,14 +231,14 @@ NSString* headerEntryIdentifierString(HeaderEntryIdentifier identifier) {
 }
 
 NSData *getAesTransformKey(NSData *compositeKey, NSData* transformSeed, uint64_t transformRounds) {
-    ///////////////////////////////////////////////////////////////////////////////////////////
-    //    1. create an AES cipher, taking Transform Seed as its key/seed,
-    //    2. initialize the transformed key value with the composite key value (transformed_key = composite_key),
-    //    3. use this cipher to encrypt the transformed_key N times ( transformed_key = AES(transformed_key), N times),
-    //    4. hash (with SHA-256) the transformed_key (transformed_key = sha256(transformed_key) ),
-    //    5. concatenate the Master Seed to the transformed_key (transformed_key = concat(Master Seed, transformed_key) ),
-    //    6. hash (with SHA-256) the transformed_key to get the final master key (final_master_key = sha256(transformed_key) ).
-    //    You now have the final master key, you can finally decrypt the database (the part of the file after the header for .kdb, and after the End of Header field for .kdbx).
+    
+    
+    
+    
+    
+    
+    
+    
     
     CCCryptorRef cryptorRef;
     CCCryptorStatus status = CCCryptorCreate(kCCEncrypt, kCCAlgorithmAES, kCCOptionECBMode, transformSeed.bytes, transformSeed.length, NULL, &cryptorRef);
@@ -271,7 +275,7 @@ NSData *getAesTransformKey(NSData *compositeKey, NSData* transformSeed, uint64_t
     NSData *transformKey = [NSData dataWithBytes:hash length:CC_SHA256_DIGEST_LENGTH];
     
     if(kLogVerbose) {
-        NSLog(@"TRANSFORM KEY: %@", transformKey);
+        slog(@"TRANSFORM KEY: %@", transformKey);
     }
     
     return transformKey;
@@ -287,34 +291,233 @@ NSData *getMasterKey(NSData* masterSeed, NSData *transformKey) {
     CC_SHA256_Final(masterKey.mutableBytes, &context);
     
     if(kLogVerbose) {
-        NSLog(@"MASTER KEY: %@", [masterKey base64EncodedStringWithOptions:kNilOptions]);
+        slog(@"MASTER KEY: %@", [masterKey base64EncodedStringWithOptions:kNilOptions]);
     }
     
     return [masterKey copy];
 }
 
-RootXmlDomainObject* parseKeePassXml(uint32_t innerRandomStreamId, NSData* innerRandomStreamKey, XmlProcessingContext* context, NSString* xml, NSError** error) {
-    KeePassXmlParserDelegate *parserDelegate = [[KeePassXmlParserDelegate alloc] initWithProtectedStreamId:innerRandomStreamId
-                                                                                                       key:innerRandomStreamKey
-                                                                                                   context:context];
+
+
+void dumpXml(NSInputStream* lib) {
+    NSInteger read;
     
-    NSXMLParser *parser = [[NSXMLParser alloc] initWithData:[xml dataUsingEncoding:NSUTF8StringEncoding]];
-    [parser setDelegate:parserDelegate];
-    [parser parse];
-    NSError* err = [parser parserError];
+    NSMutableData *d = [NSMutableData data];
+    const int kChunkSize = 32 * 1024;
+    uint8_t chunk[kChunkSize];
     
-    if(err)
-    {
-        NSLog(@"ERROR: %@", err);
-        if(error) {
-            *error = err;
+    while ((read = [lib read:chunk maxLength:kChunkSize])) {
+        [d appendBytes:chunk length:read];
+    }
+    
+    NSString* xml = [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
+    NSError* error;
+    NSString* file = [NSHomeDirectory() stringByAppendingPathComponent:@"dump.xml"];
+    
+    
+    [xml writeToFile:file atomically:YES encoding:NSUTF8StringEncoding error:&error];
+    
+    slog(@"XML Dumped: [%@]", error);
+}
+
+RootXmlDomainObject* parseXml(uint32_t innerRandomStreamId,
+                              NSData* innerRandomStreamKey,
+                              XmlProcessingContext* context,
+                              NSInputStream* stream,
+                              NSOutputStream* xmlDumpStream,
+                              BOOL sanityCheckStreamDecryption,
+                              NSError** decryptionError,
+                              NSError** error) {
+    KeePassXmlParser *parser =
+        [[KeePassXmlParser alloc] initWithProtectedStreamId:innerRandomStreamId
+                                                        key:innerRandomStreamKey
+                                sanityCheckStreamDecryption:sanityCheckStreamDecryption
+                                                    context:context];
+    
+    if (!parser) {
+        if (error) {
+            NSString* msg = [NSString stringWithFormat:@"Parser Error - Please send this error to support@strongboxsafe.com: [%d]-[%lu]-[%@]", innerRandomStreamId, (unsigned long)innerRandomStreamKey.length, innerRandomStreamKey.upperHexString];
+            *error = [Utils createNSError:msg errorCode:-1];
         }
+        
         return nil;
     }
     
-    RootXmlDomainObject* rootDocument = parserDelegate.rootElement;
+    xmlSAXHandler *my_handler = malloc(sizeof(xmlSAXHandler));
+    memset(my_handler, 0, sizeof(xmlSAXHandler));
     
-    return rootDocument;
+    my_handler->startElement = startElement;
+    my_handler->endElement = endElement;
+    my_handler->characters = characters;
+    
+    const int kChunkSize = 32 * 1024;
+    
+    uint8_t chnk[kChunkSize];
+    
+    NSInteger read = [stream read:chnk maxLength:kChunkSize];
+    if(read <= 0) {
+        slog(@"Could not read stream");
+        if (error) {
+            *error = stream.streamError ? stream.streamError : [Utils createNSError:@"Could not read stream" errorCode:-1];
+        }
+        free(my_handler);
+        return nil;
+    }
+    
+    
+    
+    NSInteger xmlMarker = findXmlMarker(chnk, read);
+    if(xmlMarker != 0) {
+        slog(@"WARN: Found XML marker starting at offset: %ld", (long)xmlMarker);
+    }
+
+    if(xmlMarker > 0) {
+        read -= xmlMarker;
+
+        uint8_t tmp[kChunkSize];
+        memset(tmp, 0, kChunkSize);
+        memcpy(tmp, &chnk[xmlMarker], read);
+        memset(chnk, 0, kChunkSize);
+        memcpy(chnk, tmp, read);
+    }
+    else if (xmlMarker < 0) {
+        slog(@"Could not find start of XML! Will try parse anyway...");
+        
+    }
+    
+    
+    
+    xmlParserCtxtPtr ctxt = nil;
+    int err = XML_ERR_OK;
+    do {
+        if(read < 0) {
+            slog(@"Error reading stream: %ld - [%@]", (long)read, stream.streamError);
+            if (error) {
+                *error = stream.streamError ? stream.streamError : [Utils createNSError:@"Error reading XML from Stream" errorCode:err];
+            }
+
+            if (ctxt) {
+                xmlFreeParserCtxt(ctxt);
+            }
+            free(my_handler);
+            return nil;
+        }
+        
+        if (xmlDumpStream) {
+            [xmlDumpStream write:chnk maxLength:read];
+        }
+
+        if(!ctxt) {
+            ctxt = xmlCreatePushParserCtxt(my_handler, (__bridge void *)(parser), (char*)chnk, (int)read, nil);
+        }
+        else {
+            err = xmlParseChunk(ctxt, (char*)chnk, (int)read, 0);
+            if (err != XML_ERR_OK || parser.error) {
+                break;
+            }
+        }
+    } while((read = [stream read:chnk maxLength:kChunkSize]));
+    
+    if(err != XML_ERR_OK || parser.error) {
+        slog(@"XML Error: %d", err);
+        if (error) {
+            *error = parser.error ? parser.error : [Utils createNSError:@"Error reading XML" errorCode:err];
+        }
+        
+        xmlFreeParserCtxt(ctxt);
+        free(my_handler);
+        return nil;
+    }
+    
+    err = xmlParseChunk(ctxt, NULL, 0, 1);
+    if(err != XML_ERR_OK || parser.error) {
+        slog(@"XML Error: %d", err);
+        if (error) {
+            NSData* foo = [NSData dataWithBytes:chnk length:20];
+            NSString* hex = foo.upperHexString;
+            
+            *error = parser.error ? parser.error : [Utils createNSError:[NSString stringWithFormat:@"Error reading Final XML Hex = [%@]", hex]
+                                errorCode:err];
+        }
+
+        xmlFreeParserCtxt(ctxt);
+        free(my_handler);
+        return nil;
+    }
+    
+    xmlFreeParserCtxt(ctxt);
+    free(my_handler);
+    
+    RootXmlDomainObject* ret = parser.rootElement;
+
+    if ( ret == nil && xmlMarker != 0 ) {
+        
+        
+        if (error) {
+            NSData* foo = [NSData dataWithBytes:chnk length:20];
+            NSString* hex = foo.upperHexString;
+            *error = [Utils createNSError:[NSString stringWithFormat:@"Could not find any valid XML. Hex = [%@]", hex]
+                               errorCode:-1];
+        }
+    }
+    
+    if ( decryptionError != nil ) {
+        *decryptionError = parser.decryptionProblem;
+    }
+    
+    return ret;
+}
+
+void startElement(void *ctx, const xmlChar *fullname, const xmlChar **atts) {
+    NSString* elementName = @((char*)fullname);
+
+    NSMutableDictionary* attributes;
+    if(atts) {
+        attributes = [NSMutableDictionary dictionaryWithCapacity:8];
+        int current = 0;
+        while (atts[current * 2] != NULL) {
+            const char* key = (char*)atts[(current * 2)];
+            const char* value = (char*)atts[(current * 2) + 1];
+            attributes[@(key)] = @(value);
+            current++;
+        }
+    }
+    
+    
+    KeePassXmlParser* parser = (__bridge KeePassXmlParser*)ctx;
+    [parser didStartElement:elementName attributes:attributes];
+}
+
+void endElement(void *ctx, const xmlChar *name) {
+    NSString* elementName = @((char*)name);
+    
+    
+    KeePassXmlParser* parser = (__bridge KeePassXmlParser*)ctx;
+    [parser didEndElement:elementName];
+}
+
+void characters (void *ctx, const xmlChar *ch, int len) {
+    NSString* text = [[NSString alloc] initWithBytes:ch length:len encoding:NSUTF8StringEncoding];
+    
+
+    KeePassXmlParser* parser = (__bridge KeePassXmlParser*)ctx;
+    [parser foundCharacters:text];
+}
+
+
+
+static char* const marker = "<?xml";
+static NSUInteger const kMarkerSize = 5;
+
+NSInteger findXmlMarker(uint8_t* chars, NSUInteger length) {
+    uint8_t* ptr = memmem(chars, length, marker, kMarkerSize);
+    
+    if(ptr) {
+        return ptr - chars;
+    }
+    else {
+        return -1;
+    }
 }
 
 @end

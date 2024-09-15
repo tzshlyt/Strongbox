@@ -3,17 +3,26 @@
 //  Strongbox
 //
 //  Created by Mark on 11/12/2018.
-//  Copyright © 2018 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import "WebDAVProviderData.h"
 
+@interface WebDAVProviderData ()
+
+@end
+
 @implementation WebDAVProviderData
 
 - (NSDictionary *)serializationDictionary {
-    NSMutableDictionary *dict = [NSMutableDictionary dictionaryWithDictionary:[self.sessionConfiguration serializationDictionary]];
+    NSMutableDictionary *dict = [NSMutableDictionary dictionary];
+        
     [dict setObject:self.href forKey:@"href"];
     
+    if ( self.connectionIdentifier ) {
+        dict[@"connectionIdentifier"] = self.connectionIdentifier;
+    }
+
     return dict;
 }
 
@@ -21,7 +30,10 @@
     WebDAVProviderData *pd = [[WebDAVProviderData alloc] init];
     
     pd.href = [dictionary objectForKey:@"href"];
-    pd.sessionConfiguration = [WebDAVSessionConfiguration fromSerializationDictionary:dictionary];
+    
+    if ( dictionary[@"connectionIdentifier"] ) {
+        pd.connectionIdentifier = dictionary[@"connectionIdentifier"];
+    }
     
     return pd;
 }

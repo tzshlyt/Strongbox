@@ -3,7 +3,7 @@
 //  Strongbox
 //
 //  Created by Mark on 22/02/2019.
-//  Copyright © 2019 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import "IconsCollectionViewController.h"
@@ -17,24 +17,34 @@
 @property (weak, nonatomic) IBOutlet UICollectionView *collectionView;
 @property (weak, nonatomic) IBOutlet UIView *customIconsView;
 
+@property NSArray<NodeIcon*>* customIcons;
+
 @end
 
 @implementation IconsCollectionViewController
 
 - (IBAction)onCancel:(id)sender {
-    self.onDone(NO, -1, nil);
+    self.onDone(NO, nil);
 }
 
 - (IBAction)onUseDefault:(id)sender {
-    self.onDone(YES, -1, nil);
+    self.onDone(YES, nil);
 }
 
 - (void)viewDidLoad {
     [super viewDidLoad];
 
-    //    self.collectionView.layer.borderWidth = 1.0f;
-    //    self.collectionView.layer.cornerRadius = 5;
-    //    self.collectionView.layer.borderColor = [UIColor lightGrayColor].CGColor;
+    if ( self.iconPool ) {
+        self.customIcons = [self.iconPool.allValues sortedArrayUsingComparator:^NSComparisonResult(id  _Nonnull obj1, id  _Nonnull obj2) {
+            NodeIcon *n1 = obj1;
+            NodeIcon *n2 = obj2;
+            
+            return [@(n1.preferredOrder) compare:@(n2.preferredOrder)];
+        }];
+    }
+    else {
+        self.customIcons = @[];
+    }
     
     self.collectionView.dataSource = self;
     self.collectionView.delegate = self;
@@ -45,17 +55,17 @@
                  withReuseIdentifier:@"IconsSectionHeaderReusableView"];
 }
 
-- (CGSize)collectionView:(UICollectionView *)collectionView layout:(UICollectionViewLayout*)collectionViewLayout referenceSizeForHeaderInSection:(NSInteger)section
-{
+- (CGSize)collectionView:(UICollectionView *)collectionView layout:(UICollectionViewLayout*)collectionViewLayout referenceSizeForHeaderInSection:(NSInteger)section {
     if (![self hasCustomIcons]) {
         return CGSizeZero;
-    }else {
-        return CGSizeMake(collectionView.frame.size.width,50);
+    }
+    else {
+        return CGSizeMake(collectionView.frame.size.width, 50);
     }
 }
 
 - (BOOL)hasCustomIcons {
-    return (self.customIcons && self.customIcons.count);
+    return self.customIcons.firstObject != nil;
 }
 
 - (NSInteger)numberOfSectionsInCollectionView:(UICollectionView *)collectionView {
@@ -63,26 +73,27 @@
 }
 
 - (NSInteger)collectionView:(UICollectionView *)collectionView numberOfItemsInSection:(NSInteger)section {
-    return ([self hasCustomIcons] && section == 0) ? self.customIcons.count : [NodeIconHelper iconSet].count;
+    return ([self hasCustomIcons] && section == 0) ? self.customIcons.count : [NodeIconHelper getIconSet:self.predefinedKeePassIconSet].count;
 }
 
 - (UICollectionViewCell *)collectionView:(UICollectionView *)collectionView cellForItemAtIndexPath:(NSIndexPath *)indexPath {
+    IconViewCell *cell = [collectionView dequeueReusableCellWithReuseIdentifier:@"CELL" forIndexPath:indexPath];
+
     if([self hasCustomIcons] && indexPath.section == 0) {
-        IconViewCell *cell = [collectionView dequeueReusableCellWithReuseIdentifier:@"CELL" forIndexPath:indexPath];
-        NSUUID* uuid = self.customIcons.allKeys[indexPath.row];
-        UIImage* image = [NodeIconHelper getCustomIcon:uuid customIcons:self.customIcons];
+        NodeIcon* icon = self.customIcons[indexPath.row];
+        UIImage* image = [NodeIconHelper getNodeIcon:icon predefinedIconSet:self.predefinedKeePassIconSet];
         
         if(image) {
             cell.imageView.image = image;
         }
-        
-        return cell;
+        cell.labelName.text = icon.name ? icon.name : @"";
     }
     else {
-        IconViewCell *cell = [collectionView dequeueReusableCellWithReuseIdentifier:@"CELL" forIndexPath:indexPath];
-        cell.imageView.image = [NodeIconHelper iconSet][indexPath.item];
-        return cell;
+        cell.imageView.image = [NodeIconHelper getNodeIcon:[NodeIcon withPreset:indexPath.item] predefinedIconSet:self.predefinedKeePassIconSet];
+        cell.labelName.text = @"";
     }
+
+    return cell;
 }
 
 -(UICollectionReusableView *)collectionView:(UICollectionView *)collectionView viewForSupplementaryElementOfKind:(NSString *)kind
@@ -106,12 +117,14 @@
 }
 
 - (void)collectionView:(UICollectionView *)collectionView didSelectItemAtIndexPath:(NSIndexPath *)indexPath {
+    slog(@"collectionView::didSelectItemAtIndexPath - [%@]", indexPath);
+    
     if([self hasCustomIcons] && indexPath.section == 0) {
-        NSUUID* uuid = self.customIcons.allKeys[indexPath.row];
-        self.onDone(YES, -1L, uuid);
+        NodeIcon* icon = self.customIcons[indexPath.row];
+        self.onDone(YES, icon);
     }
     else {
-        self.onDone(YES, indexPath.item, nil);
+        self.onDone(YES, [NodeIcon withPreset:indexPath.item]);
     }
 }
 

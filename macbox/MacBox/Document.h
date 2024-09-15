@@ -9,18 +9,28 @@
 #import <Cocoa/Cocoa.h>
 #import "AbstractDatabaseFormatAdaptor.h"
 #import "CompositeKeyFactors.h"
+#import "MacDatabasePreferences.h"
+#import "ViewModel.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
+extern NSString* const kModelUpdateNotificationFullReload;
+extern NSString* const kGenericRefreshAllDatabaseViewsNotification;
+
 @interface Document : NSDocument
 
-- (instancetype)initWithCredentials:(DatabaseFormat)format compositeKeyFactors:(CompositeKeyFactors*)compositeKeyFactors;
+@property (readonly) BOOL isEditsInProgress;
+@property (readonly) BOOL isDisplayingEditSheet;
 
-- (void)revertWithUnlock:(CompositeKeyFactors*)compositeKeyFactors
-            selectedItem:(NSString*_Nullable)selectedItem
-              completion:(void(^)(BOOL success, NSError*_Nullable error))completion;
+@property (readonly) ViewModel* viewModel;
+@property (readonly, nullable) MacDatabasePreferences* databaseMetadata;
 
-NS_ASSUME_NONNULL_END
+- (void)initiateLockSequence;
+- (void)onDatabaseChangedByExternalOther;
+
+- (void)import2FAToken:(OTPToken*)token;
 
 @end
+
+NS_ASSUME_NONNULL_END
 

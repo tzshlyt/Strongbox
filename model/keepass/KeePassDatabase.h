@@ -4,21 +4,11 @@
 #import <Foundation/Foundation.h>
 #import "Node.h"
 #import "AbstractDatabaseFormatAdaptor.h"
-#import "KeePassDatabaseMetadata.h"
 #import "KeePassConstants.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
 @interface KeePassDatabase : NSObject<AbstractDatabaseFormatAdaptor>
-
-+ (BOOL)isAValidSafe:(nullable NSData *)candidate error:(NSError**)error;
-
-+ (NSString *)fileExtension;
-
-- (nullable NSData*)save:(StrongboxDatabase*)database error:(NSError**)error;
-
-@property (nonatomic, readonly) DatabaseFormat format;
-@property (nonatomic, readonly) NSString* fileExtension;
 
 @end
 

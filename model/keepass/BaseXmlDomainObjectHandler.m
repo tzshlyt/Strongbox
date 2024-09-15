@@ -3,13 +3,19 @@
 //  Strongbox
 //
 //  Created by Mark on 17/10/2018.
-//  Copyright © 2018 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import "BaseXmlDomainObjectHandler.h"
-#import "XmlTree.h"
+#import "KeePassConstants.h"
 
 @interface BaseXmlDomainObjectHandler ()
+
+@property (nonatomic) NSString* internalElementName;
+@property (nonatomic) NSDictionary *internalAttributes;
+@property (nonatomic) NSString* internalText;
+
+@property (nonatomic) NSMutableArray<id<XmlParsingDomainObject>>* lazyUnmanagedChildElements;
 
 @end
 
@@ -20,76 +26,102 @@
                 format:@"You must override %@ in a subclass", NSStringFromSelector(_cmd)];
 
     return nil;
-//    return [self initWithXmlElementName:@"<DUMMY - Unreachable>" context:nil];
 }
 
 - (instancetype)initWithXmlElementName:(NSString*)xmlElementName context:(nonnull XmlProcessingContext *)context {
     if(self = [super init]) {
-        self.nonCustomisedXmlTree = [[XmlTree alloc] initWithXmlElementName:xmlElementName];
-        
         if(!context) {
-            NSLog(@"Parsing Context cannot be nil.");
+            slog(@"Parsing Context cannot be nil.");
             [NSException raise:NSInternalInconsistencyException
                         format:@"Parsing Context cannot be nil %@ in a subclass", NSStringFromSelector(_cmd)];
             return nil;
         }
         
+        self.internalElementName = xmlElementName;
         self.context = context;
     }
 
     return self;
 }
 
-- (BOOL)addKnownChildObject:(nonnull NSObject *)completedObject withXmlElementName:(nonnull NSString *)withXmlElementName {
-    return NO; // We don't know any specific child objects, returning NO leads to a call to the above addUnknownChildObject
+- (BOOL)isV3BinaryHack {
+    return NO;
 }
 
-- (void)addUnknownChildObject:(XmlTree*)xmlTree {
-    [self.nonCustomisedXmlTree.children addObject:xmlTree];
+- (BOOL)appendStreamedText:(NSString *)text {
+    return NO;
+}
+    
+- (NSString *)originalElementName {
+    return self.internalElementName;
 }
 
-- (id<XmlParsingDomainObject>)getChildHandler:(nonnull NSString *)xmlElementName {
-    return nil; // We don't have any special child handlers, returning nil here just leads to us being used again anyway
+- (NSDictionary *)originalAttributes {
+    return self.internalAttributes;
+}
+
+- (NSString *)originalText {
+    return self.internalText ? self.internalText : @"";
 }
 
 - (void)setXmlInfo:(nonnull NSString *)elementName attributes:(nonnull NSDictionary *)attributes {
-    self.nonCustomisedXmlTree.node.xmlElementName = elementName;
-    [self.nonCustomisedXmlTree.node.xmlAttributes addEntriesFromDictionary:attributes];
+    self.internalElementName = elementName;
+    self.internalAttributes = attributes;
 }
 
-- (void)setXmlInfo:(nonnull NSString *)elementName
-        attributes:(nonnull NSDictionary *)attributes
-              text:(nonnull NSString *)text {
-    self.nonCustomisedXmlTree.node.xmlElementName = elementName;
-    [self.nonCustomisedXmlTree.node.xmlAttributes addEntriesFromDictionary:attributes];
-    self.nonCustomisedXmlTree.node.xmlText = text;
-}
-
-- (nonnull XmlTree *)generateXmlTree {
-    return self.nonCustomisedXmlTree;
-}
-
-- (void)setXmlAttribute:(nonnull NSString *)key value:(nonnull NSString *)value {
-    [self.nonCustomisedXmlTree.node.xmlAttributes setValue:value forKey:key];
-}
-
-- (void)appendXmlText:(nonnull NSString *)text {
-    //NSLog(@"appendXmlText: [%@]", text);
-    [self.nonCustomisedXmlTree.node appendXmlText:text];
-}
-
-- (nonnull NSString *)getXmlText {
-    return self.nonCustomisedXmlTree.node.xmlText;
+- (void)setXmlText:(nonnull NSString *)text {
+    self.internalText = text;
 }
 
 - (void)onCompleted { }
 
-- (void)setXmlText:(nonnull NSString *)text {
-    self.nonCustomisedXmlTree.node.xmlText = text;
+- (BOOL)addKnownChildObject:(id<XmlParsingDomainObject>)completedObject withXmlElementName:(nonnull NSString *)withXmlElementName {
+    return NO; 
 }
 
-- (NSString *)description {
-    return [NSString stringWithFormat:@"%@", self.nonCustomisedXmlTree];
+- (id<XmlParsingDomainObject>)getChildHandler:(nonnull NSString *)xmlElementName {
+    return nil; 
+}
+
+- (void)addUnknownChildObject:(id<XmlParsingDomainObject>)xmlItem {
+    slog(@"WARNWARN - Found Unknown Element: [%@]", xmlItem.originalElementName);
+    
+    if(!self.lazyUnmanagedChildElements) {
+        self.lazyUnmanagedChildElements = [NSMutableArray arrayWithCapacity:32];
+    }
+    [self.lazyUnmanagedChildElements addObject:xmlItem];
+}
+
+- (BOOL)writeXml:(id<IXmlSerializer>)serializer {
+    if(![serializer beginElement:self.originalElementName
+                            text:self.originalText
+                      attributes:self.originalAttributes]) {
+        return NO;
+    }
+
+    [self writeUnmanagedChildren:serializer];
+    
+    [serializer endElement];
+    
+    return YES;
+}
+
+- (NSArray<id<XmlParsingDomainObject>>* )unmanagedChildren {
+    return self.lazyUnmanagedChildElements;
+}
+
+- (BOOL)writeUnmanagedChildren:(id<IXmlSerializer>)serializer {
+    if(!self.lazyUnmanagedChildElements || self.lazyUnmanagedChildElements.count == 0) {
+        return YES;
+    }
+    
+    for (id<XmlParsingDomainObject> child in self.lazyUnmanagedChildElements) {
+        if(![child writeXml:serializer]) {
+            return NO;
+        }
+    }
+    
+    return YES;
 }
 
 @end

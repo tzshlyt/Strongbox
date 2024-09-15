@@ -3,23 +3,24 @@
 //  Strongbox-iOS
 //
 //  Created by Mark on 25/04/2019.
-//  Copyright © 2019 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import "AddAttachmentHelper.h"
 #import <MobileCoreServices/MobileCoreServices.h>
 #import "Alerts.h"
 #import "Utils.h"
-#import "SVProgressHUD/SVProgressHUD.h"
-#import "UiAttachment.h"
+#import "SVProgressHUD.h"
 #import "UIImage+FixOrientation.h"
+#import "NSDate+Extensions.h"
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
-const int kMaxRecommendedAttachmentSize = 512 * 1024; // KB
+const int kMaxRecommendedAttachmentSize = 512 * 1024; 
 
 @interface AddAttachmentHelper () <UIImagePickerControllerDelegate, UIDocumentPickerDelegate, UINavigationControllerDelegate>
 
 @property UIViewController* parentViewController;
-@property (nonatomic, copy) void (^onAdd)(UiAttachment * _Nonnull attachment);
+@property (nonatomic, copy) void (^onAdd)(NSString* filename, KeePassAttachmentAbstractionLayer* databaseAttachment);
 @property NSSet<NSString*>* usedFilenames;
 
 @end
@@ -37,10 +38,14 @@ const int kMaxRecommendedAttachmentSize = 512 * 1024; // KB
     return sharedInstance;
 }
 
-- (void)beginAddAttachmentUi:(UIViewController *)vc usedFilenames:(NSArray<NSString *> *)usedFilenames onAdd:(void (^)(UiAttachment * _Nonnull))onAdd {
+- (void)beginAddAttachmentUi:(UIViewController *)vc
+               usedFilenames:(NSSet<NSString *> *)usedFilenames
+                       onAdd:(void (^)(NSString* filename, KeePassAttachmentAbstractionLayer* databaseAttachment))onAdd {
     self.parentViewController = vc;
     self.onAdd = onAdd;
-    self.usedFilenames = [NSSet setWithArray:usedFilenames]; // Not case sensitive in original app - no need to lowercase
+    
+    
+    self.usedFilenames = usedFilenames;
     
     UIAlertController *alertController =
     [UIAlertController alertControllerWithTitle:NSLocalizedString(@"add_attachment_vc_prompt_title", @"Attachment Location")
@@ -63,7 +68,7 @@ const int kMaxRecommendedAttachmentSize = 512 * 1024; // KB
         index++;
     }
     
-    UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:NSLocalizedString(@"add_attachment_vc_prompt_source_option_cancel", @"Cancel")
+    UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:NSLocalizedString(@"generic_cancel", @"Cancel")
                                                            style:UIAlertActionStyleCancel
                                                          handler:^(UIAlertAction *a) {
                                                              [self onAddAttachmentLocationResponse:0];
@@ -76,7 +81,10 @@ const int kMaxRecommendedAttachmentSize = 512 * 1024; // KB
 
 - (void)onAddAttachmentLocationResponse:(int)response {
     if(response == 3) {
-        UIDocumentPickerViewController *vc = [[UIDocumentPickerViewController alloc] initWithDocumentTypes:@[(NSString*)kUTTypeItem] inMode:UIDocumentPickerModeImport];
+        UTType* type = [UTType typeWithIdentifier:(NSString*)kUTTypeItem];
+        UIDocumentPickerViewController *vc = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[type]];
+
+
         vc.delegate = self;
         vc.modalPresentationStyle = UIModalPresentationFormSheet;
         
@@ -109,15 +117,28 @@ const int kMaxRecommendedAttachmentSize = 512 * 1024; // KB
 }
 
 - (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
-    NSLog(@"didPickDocumentsAtURLs: %@", urls);
+    slog(@"didPickDocumentsAtURLs: %@", urls);
     
     NSURL* url = [urls objectAtIndex:0];
+
+    
+    
+    if (! [url startAccessingSecurityScopedResource] ) {
+        slog(@"🔴 Could not securely access URL!");
+    }
     
     NSError* error;
-    NSData* data = [NSData dataWithContentsOfURL:url options:kNilOptions error:&error];
+    __block NSData *data;
+    __block NSError *err;
+    NSFileCoordinator *coordinator = [[NSFileCoordinator alloc] init];
+    [coordinator coordinateReadingItemAtURL:url options:0 error:&error byAccessor:^(NSURL *newURL) {
+        data = [NSData dataWithContentsOfURL:newURL options:NSDataReadingUncached error:&err];
+    }];
+    
+    [url stopAccessingSecurityScopedResource];
     
     if(!data) {
-        NSLog(@"Error: %@", error);
+        slog(@"Error: %@", error);
         [Alerts warn:self.parentViewController
                title:NSLocalizedString(@"add_attachment_vc_error_reading_title", @"Error Reading")
              message:NSLocalizedString(@"add_attachment_vc_error_reading_message", @"Could not read the data for this item.")];
@@ -129,7 +150,7 @@ const int kMaxRecommendedAttachmentSize = 512 * 1024; // KB
 }
 
 - (void)imagePickerController:(UIImagePickerController *)picker didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *)info {
-    NSLog(@"Image Pick did finish: [%@]", info);
+    slog(@"Image Pick did finish: [%@]", info);
     NSString* mediaType = [info objectForKey:UIImagePickerControllerMediaType];
     BOOL isImage = UTTypeConformsTo((__bridge CFStringRef)mediaType, kUTTypeImage) != 0;
     
@@ -138,9 +159,7 @@ const int kMaxRecommendedAttachmentSize = 512 * 1024; // KB
     NSString *suggestedFilename = @"image.png";
 
     if(isImage) {
-        if (@available(iOS 11.0, *)) {
-            url =  [info objectForKey:UIImagePickerControllerImageURL];
-        }
+        url =  [info objectForKey:UIImagePickerControllerImageURL];
         
         if(!url) {
             UIImage* image = [info objectForKey:UIImagePickerControllerOriginalImage];
@@ -155,7 +174,7 @@ const int kMaxRecommendedAttachmentSize = 512 * 1024; // KB
             UIImage* fixed = [image fixOrientation];
             
             data = UIImagePNGRepresentation(fixed);
-            suggestedFilename = [NSString stringWithFormat:@"%@.png", iso8601DateString(NSDate.date)];
+            suggestedFilename = [NSString stringWithFormat:@"%@.png", NSDate.date.iso8601DateString];
         }
     }
     else {
@@ -169,7 +188,7 @@ const int kMaxRecommendedAttachmentSize = 512 * 1024; // KB
     }
     
     if(!data) {
-        NSLog(@"Error: %@", error);
+        slog(@"Error: %@", error);
         
         [picker dismissViewControllerAnimated:YES completion:^{
             [Alerts warn:self.parentViewController
@@ -216,10 +235,10 @@ const int kMaxRecommendedAttachmentSize = 512 * 1024; // KB
         NSMutableDictionary<NSString*, NSData*> *resized = [NSMutableDictionary dictionary];
         NSMutableArray<NSString*> *sortedKeys = [NSMutableArray array];
         for(int i=0;i<4;i++) {
-            int size = 1 << (9 + i); // Start at 512px
+            int size = 1 << (9 + i); 
             
             UIImage* rescaled = scaleImage(image, CGSizeMake(size, size));
-            NSData* rescaledData = UIImageJPEGRepresentation(rescaled, 0.95f); // Decent Quality
+            NSData* rescaledData = UIImageJPEGRepresentation(rescaled, 0.95f); 
             
             if(rescaledData.length > data.length) {
                 break;
@@ -238,10 +257,11 @@ const int kMaxRecommendedAttachmentSize = 512 * 1024; // KB
     });
 }
 
-- (void)promptForLargeImageRescaleChoice:(NSString*)suggestedFilename image:(UIImage*)image
-       data:(NSData*)data
-    resized:(NSDictionary<NSString*, NSData*> *)resized
- sortedKeys:(NSArray<NSString*>*)sortedKeys {
+- (void)promptForLargeImageRescaleChoice:(NSString*)suggestedFilename
+                                   image:(UIImage*)image
+                                    data:(NSData*)data
+                                 resized:(NSDictionary<NSString*, NSData*> *)resized
+                              sortedKeys:(NSArray<NSString*>*)sortedKeys {
     [SVProgressHUD dismiss];
     
     NSString* message = resized.count > 0 ?
@@ -269,9 +289,9 @@ const int kMaxRecommendedAttachmentSize = 512 * 1024; // KB
     NSString* size = friendlyFileSizeString(data.length);
     UIAlertAction *originalAction =
         [UIAlertAction actionWithTitle:[NSString stringWithFormat:resized.count > 0 ?
-            NSLocalizedString(@"add_attachment_vc_large_image_prompt_option_original_size_fmt", @"Original (%d x %d) %@") :
-            NSLocalizedString(@"add_attachment_vc_large_image_prompt_option_use_anyway_size_fmt", @"Use Anyway (%d x %d) %@"),
-                                                                    (int)image.size.width, (int)image.size.height, size]
+            NSLocalizedString(@"add_attachment_vc_large_image_prompt_option_original_size_fmt2", @"Original (%@ x %@) %@") :
+            NSLocalizedString(@"add_attachment_vc_large_image_prompt_option_use_anyway_size_fmt2", @"Use Anyway (%@ x %@) %@"),
+                                                                    @((int)image.size.width), @((int)image.size.height), size]
                                                              style:UIAlertActionStyleDefault
                                                            handler:^(UIAlertAction *a) {
                                                                [self addAttachmentNoWarn:suggestedFilename data:data];
@@ -279,7 +299,7 @@ const int kMaxRecommendedAttachmentSize = 512 * 1024; // KB
     [alertController addAction:originalAction];
     
     UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:
-                                   NSLocalizedString(@"add_attachment_vc_large_image_prompt_option_cancel", @"Cancel")
+                                   NSLocalizedString(@"generic_cancel", @"Cancel")
                                                            style:UIAlertActionStyleCancel
                                                          handler:^(UIAlertAction *a) { }];
     [alertController addAction:cancelAction];
@@ -305,11 +325,12 @@ const int kMaxRecommendedAttachmentSize = 512 * 1024; // KB
                                   }
                                   else {
                                       if(self.onAdd) {
-                                          UiAttachment* attachment = [[UiAttachment alloc] initWithFilename:text data:data];
+                                          NSInputStream* inputStream = [NSInputStream inputStreamWithData:data];
+                                          KeePassAttachmentAbstractionLayer *dbAttachment = [[KeePassAttachmentAbstractionLayer alloc] initWithStream:inputStream length:data.length protectedInMemory:YES compressed:YES];
                                           
-                                          NSLog(@"Adding Attachment: [%@]", attachment);
+                                          slog(@"Adding Attachment: [%@]-[%@]", text, dbAttachment.digestHash);
                                           
-                                          self.onAdd(attachment);
+                                          self.onAdd(text, dbAttachment);
                                       }
                                   }
                               }

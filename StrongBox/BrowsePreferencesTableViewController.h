@@ -3,24 +3,23 @@
 //  Strongbox-iOS
 //
 //  Created by Mark on 08/06/2019.
-//  Copyright © 2019 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import <UIKit/UIKit.h>
 #import "StaticDataTableViewController.h"
 #import "AbstractDatabaseFormatAdaptor.h"
-#import "SafeMetaData.h"
+#import "DatabasePreferences.h"
+#import "Model.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
 @interface BrowsePreferencesTableViewController : StaticDataTableViewController
 
-@property DatabaseFormat format;
-@property SafeMetaData* databaseMetaData;
++ (instancetype)fromStoryboard;
 
-@property (nonatomic, copy) void (^onPreferencesChanged)(void);
-
-+ (NSString*)getBrowseViewTypeName:(BrowseViewType)field;
+@property Model* model;
+@property (nonatomic, copy) void (^onDone)(void);
 
 @end
 

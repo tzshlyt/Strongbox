@@ -3,7 +3,7 @@
 //  Strongbox
 //
 //  Created by Mark on 11/12/2018.
-//  Copyright © 2018 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import <Foundation/Foundation.h>
@@ -17,15 +17,28 @@ typedef NS_ENUM (NSUInteger, SFTPAuthenticationMode) {
 
 @interface SFTPSessionConfiguration : NSObject
 
+@property NSString* identifier;
+
+@property (nullable) NSString* name;
 @property NSString* host;
 @property SFTPAuthenticationMode authenticationMode;
 @property (nullable) NSString* username;
 @property (nullable) NSString* password;
 @property (nullable) NSString* privateKey;
-@property (nullable) NSString* publicKey;
+@property (nullable) NSString* initialDirectory;
+@property (nullable) NSString* sha256FingerPrint;
+
+@property NSString* keyChainUuid;
 
 - (NSDictionary*)serializationDictionary;
-+ (instancetype)fromSerializationDictionary:(NSDictionary*)dictionary;
++ (instancetype _Nullable)fromSerializationDictionary:(NSDictionary*)dictionary;
+
+-(NSString*)getKeyChainKey:(NSString*)propertyName;
+
+- (void)clearKeychainItems;
+
+- (BOOL)isTheSameConnection:(SFTPSessionConfiguration*)other;
+- (BOOL)isNetworkingFieldsAreSame:(SFTPSessionConfiguration*)other;
 
 @end
 

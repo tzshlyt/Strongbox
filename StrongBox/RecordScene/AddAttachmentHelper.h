@@ -3,12 +3,12 @@
 //  Strongbox-iOS
 //
 //  Created by Mark on 25/04/2019.
-//  Copyright © 2019 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
-#import "UiAttachment.h"
+#import "KeePassAttachmentAbstractionLayer.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -19,8 +19,8 @@ extern const int kMaxRecommendedAttachmentSize;
 + (instancetype)sharedInstance;
 
 - (void)beginAddAttachmentUi:(UIViewController*)vc
-               usedFilenames:(NSArray<NSString*>*)usedFilenames
-                       onAdd:(void(^)(UiAttachment* attachment))onAdd;
+               usedFilenames:(NSSet<NSString*>*)usedFilenames
+                       onAdd:(void(^)(NSString* filename, KeePassAttachmentAbstractionLayer* databaseAttachment))onAdd;
 
 @end
 

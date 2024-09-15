@@ -3,12 +3,13 @@
 //  Strongbox
 //
 //  Created by Mark on 11/12/2018.
-//  Copyright © 2018 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import <Foundation/Foundation.h>
 #import "SafeStorageProvider.h"
 #import "SFTPSessionConfiguration.h"
+#import "SFTPProviderData.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -16,18 +17,25 @@ NS_ASSUME_NONNULL_BEGIN
 
 + (instancetype)sharedInstance;
 
-@property (nullable) SFTPSessionConfiguration *unitTestingSessionConfiguration; // Keep Session across Listing/Create operations, otherwise use the specified SafeMetaData config 
+@property (nullable) SFTPSessionConfiguration *explicitConnection; 
 
-@property (strong, nonatomic, readonly) NSString *displayName;
-@property (strong, nonatomic, readonly) NSString *icon;
 @property (nonatomic, readonly) StorageProvider storageId;
-@property (nonatomic, readonly) BOOL allowOfflineCache;
 @property (nonatomic, readonly) BOOL providesIcons;
 @property (nonatomic, readonly) BOOL browsableNew;
 @property (nonatomic, readonly) BOOL browsableExisting;
 @property (nonatomic, readonly) BOOL rootFolderOnly;
+@property (nonatomic, readonly) BOOL defaultForImmediatelyOfferOfflineCache;
+@property (nonatomic, readonly) BOOL supportsConcurrentRequests;
+@property (nonatomic, readonly) BOOL privacyOptInRequired;
 
 @property BOOL maintainSessionForListing;
+
+- (SFTPProviderData*)getProviderDataFromMetaData:(METADATA_PTR)metaData;
+- (SFTPSessionConfiguration*_Nullable)getConnectionFromDatabase:(METADATA_PTR)metaData;
+
+- (void)testConnection:(SFTPSessionConfiguration *)connection
+        viewController:(VIEW_CONTROLLER_PTR)viewController
+            completion:(void (^)(NSError* error))completion;
 
 @end
 

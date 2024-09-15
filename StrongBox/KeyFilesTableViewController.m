@@ -3,7 +3,7 @@
 //  Strongbox
 //
 //  Created by Mark on 28/05/2019.
-//  Copyright © 2019 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import "KeyFilesTableViewController.h"
@@ -11,18 +11,32 @@
 #import <MobileCoreServices/MobileCoreServices.h>
 #import "Utils.h"
 #import "IOsUtils.h"
-#import "Settings.h"
-#import "SafesList.h"
+#import "DatabasePreferences.h"
 #import "NSArray+Extensions.h"
-#import <DZNEmptyDataSet/UIScrollView+EmptyDataSet.h>
-#import "FileManager.h"
+#import "StrongboxiOSFilesManager.h"
+#import "AppPreferences.h"
+#import "BookmarksHelper.h"
+#import "UITableView+EmptyDataSet.h"
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#import "ContextMenuHelper.h"
+#import "KeyFileManagement.h"
 
-@interface KeyFilesTableViewController () <UIDocumentPickerDelegate, UIImagePickerControllerDelegate, UINavigationControllerDelegate, DZNEmptyDataSetSource>
+#ifndef IS_APP_EXTENSION
+#import "Strongbox-Swift.h"
+#else
+#import "Strongbox_Auto_Fill-Swift.h"
+#endif
+
+@interface KeyFilesTableViewController () <UIDocumentPickerDelegate, UIImagePickerControllerDelegate, UINavigationControllerDelegate>
 
 @property NSArray<NSURL*>* keyFiles;
 @property NSArray<NSURL*>* otherFiles;
 @property UIDocumentPickerViewController* importDocPicker;
-@property (weak, nonatomic) IBOutlet UIBarButtonItem *buttonOptions;
+@property (weak, nonatomic) IBOutlet UIBarButtonItem *buttonAddKeyFile;
+
+@property NSUInteger docPickerMode;
+@property KeyFile* keyFileToSave;
+@property NSURL* tmpFileToDelete;
 
 @end
 
@@ -33,18 +47,83 @@
     
     self.clearsSelectionOnViewWillAppear = NO;
     self.tableView.tableFooterView = [UIView new];
-    self.tableView.emptyDataSetSource = self;
     
     self.title = self.manageMode ?
     NSLocalizedString(@"key_files_vc_manage_title", @"Manage Key Files") :
     NSLocalizedString(@"key_files_vc_select_title", @"Select Key File");
-    self.buttonOptions.enabled = !self.manageMode;
-    self.buttonOptions.tintColor = self.manageMode ? UIColor.clearColor : nil;
+    
+    [self setupAddKeyFileMenu];
     
     [self refresh];
 }
 
-- (NSAttributedString *)titleForEmptyDataSet:(UIScrollView *)scrollView {
+- (void)setupAddKeyFileMenu {
+    __weak KeyFilesTableViewController* weakSelf = self;
+    
+    UIMenuElement* import = [ContextMenuHelper  getItem:NSLocalizedString(@"kfm_import_key_file_ellipsis", @"Import Key File...")
+                                            systemImage:@"folder.circle"
+                                                handler:^(__kindof UIAction * _Nonnull action) {
+        [weakSelf onImportKeyFile];
+    }];
+    
+    UIMenuElement* create = [ContextMenuHelper  getItem:NSLocalizedString(@"kfm_create_new_key_file_ellipsis", @"Create New Key File...")
+                                            systemImage:@"doc.badge.plus"
+                                                handler:^(__kindof UIAction * _Nonnull action) {
+        [weakSelf onCreateKeyFile];
+    }];
+    
+    UIMenuElement* recoverKeyFile = [ContextMenuHelper  getItem:NSLocalizedString(@"kfm_recover_key_file_ellipsis", @"Recover Key File...")
+                                                    systemImage:@"key"
+                                                        handler:^(__kindof UIAction * _Nonnull action) {
+        [weakSelf onRecoverKeyFile];
+    }];
+    
+    UIMenuElement* singleUse = [ContextMenuHelper  getItem:NSLocalizedString(@"kfm_single_use_key_file_ellipsis", @"Single Use (No Import)")
+                                               systemImage:@"gear"
+                                                   handler:^(__kindof UIAction * _Nonnull action) {
+        [weakSelf onAdvancedOptions:nil];
+    }];
+    
+    
+    
+#ifndef IS_APP_EXTENSION
+    UIMenu* menu1 = [UIMenu menuWithTitle:@""
+                                    image:nil
+                               identifier:nil
+                                  options:UIMenuOptionsDisplayInline
+                                 children:@[import, create]];
+    
+    UIMenu* menu2 = [UIMenu menuWithTitle:NSLocalizedString(@"generic_advanced_noun", @"Advanced")
+                                    image:nil
+                               identifier:nil
+                                  options:UIMenuOptionsDisplayInline
+                                 children:self.manageMode ? @[recoverKeyFile] : @[singleUse, recoverKeyFile]];
+    
+#else
+    UIMenu* menu1 = [UIMenu menuWithTitle:@""
+                                    image:nil
+                               identifier:nil
+                                  options:UIMenuOptionsDisplayInline
+                                 children:@[import]];
+    
+    UIMenu* menu2 = [UIMenu menuWithTitle:NSLocalizedString(@"generic_advanced_noun", @"Advanced")
+                                    image:nil
+                               identifier:nil
+                                  options:UIMenuOptionsDisplayInline
+                                 children:self.manageMode ? @[] : @[singleUse]];
+#endif
+
+    UIMenu* menu = [UIMenu menuWithTitle:@""
+                                   image:nil
+                              identifier:nil
+                                 options:kNilOptions
+                                children:@[menu1, menu2]];
+
+    self.buttonAddKeyFile.action = nil;
+    self.buttonAddKeyFile.menu = menu;
+}
+
+- (NSAttributedString *)getTitleForEmptyDataSet {
     NSString *text = NSLocalizedString(@"key_files_vc_empty_key_files_title", @"No Key Files Found. Tap '+' to import one.");
     
     NSDictionary *attributes = @{NSFontAttributeName:[UIFont preferredFontForTextStyle:UIFontTextStyleBody],
@@ -64,7 +143,7 @@
     NSMutableArray* otherFiles = [NSMutableArray array];
     
     NSFileManager *fm = [NSFileManager defaultManager];
-    NSURL *directoryURL = FileManager.sharedInstance.documentsDirectory;
+    NSURL *directoryURL = StrongboxFilesManager.sharedInstance.documentsDirectory;
     
     NSArray *keys = [NSArray arrayWithObject:NSURLIsDirectoryKey];
     
@@ -78,23 +157,27 @@
         NSError *error;
         NSNumber *isDirectory = nil;
         if (![url getResourceValue:&isDirectory forKey:NSURLIsDirectoryKey error:&error]) {
-            // handle error
-            NSLog(@"%@", error);
+            slog(@"%@", error);
         }
         else if (![isDirectory boolValue]) {
-            if(Settings.sharedInstance.showAllFilesInLocalKeyFiles || ![self isUnlikelyKeyFile:url]) {
+            if(AppPreferences.sharedInstance.showAllFilesInLocalKeyFiles || ![self isUnlikelyKeyFile:url]) {
                 [otherFiles addObject:url];
             }
         }
     }
-
-    self.otherFiles = [otherFiles copy];
+    
+    self.otherFiles = [otherFiles sortedArrayUsingComparator:^NSComparisonResult(id  _Nonnull obj1, id  _Nonnull obj2) {
+        NSURL* u1 = obj1;
+        NSURL* u2 = obj2;
+        
+        return finderStringCompare(u1.lastPathComponent, u2.lastPathComponent);
+    }];
 }
 
 - (void)loadKeyFiles {
     NSMutableArray* files = [NSMutableArray array];
     NSFileManager *fm = [NSFileManager defaultManager];
-    NSURL *directoryURL =  FileManager.sharedInstance.keyFilesDirectory;
+    NSURL *directoryURL =  StrongboxFilesManager.sharedInstance.keyFilesDirectory;
     
     NSDirectoryEnumerator *enumerator = [fm
                                          enumeratorAtURL:directoryURL
@@ -106,22 +189,26 @@
         NSError *error;
         NSNumber *isDirectory = nil;
         if (![url getResourceValue:&isDirectory forKey:NSURLIsDirectoryKey error:&error]) {
-            // handle error
-            NSLog(@"%@", error);
+            slog(@"%@", error);
         }
         else if (![isDirectory boolValue]) {
             [files addObject:url];
         }
     }
     
-    self.keyFiles = [files copy];
+    self.keyFiles = [files sortedArrayUsingComparator:^NSComparisonResult(id  _Nonnull obj1, id  _Nonnull obj2) {
+        NSURL* u1 = obj1;
+        NSURL* u2 = obj2;
+        
+        return finderStringCompare(u1.lastPathComponent, u2.lastPathComponent);
+    }];
 }
 
 - (BOOL)isUnlikelyKeyFile:(NSURL*)url {
     if ([url.pathExtension localizedCaseInsensitiveCompare:@"psafe3"] == NSOrderedSame ||
         [url.pathExtension localizedCaseInsensitiveCompare:@"kdbx"] == NSOrderedSame ||
         [url.pathExtension localizedCaseInsensitiveCompare:@"kdb"] == NSOrderedSame) {
-        NSLog(@"Filtering Local File as Unlikely Key File [%@]", url.lastPathComponent);
+
         return YES;
     }
     
@@ -135,45 +222,43 @@
     }
 }
 
-- (IBAction)onAddKeyFile:(id)sender {
-    self.importDocPicker = [[UIDocumentPickerViewController alloc] initWithDocumentTypes:@[(NSString*)kUTTypeItem] inMode:UIDocumentPickerModeImport];
-    self.importDocPicker.delegate = self;
-    [self presentViewController:self.importDocPicker animated:YES completion:nil];
-}
-
 - (IBAction)onAdvancedOptions:(id)sender {
     [Alerts threeOptions:self
                    title:NSLocalizedString(@"key_files_vc_one_time_key_file_source_title", @"One Time Key File Source")
                  message:NSLocalizedString(@"key_files_vc_one_time_key_file_source_message", @"Select where you would like to choose your Key File from. This file will not be stored locally or remembered.")
        defaultButtonText:NSLocalizedString(@"key_files_vc_one_time_key_file_source_option_files", @"Files...")
         secondButtonText:NSLocalizedString(@"key_files_vc_one_time_key_file_source_option_photos", @"Photo Library...")
-         thirdButtonText:NSLocalizedString(@"key_files_vc_option_cancel", @"Cancel")
+         thirdButtonText:NSLocalizedString(@"generic_cancel", @"Cancel")
                   action:^(int response) {
-                      if(response == 0) {
-                          UIDocumentPickerViewController *vc = [[UIDocumentPickerViewController alloc] initWithDocumentTypes:@[(NSString*)kUTTypeItem] inMode:UIDocumentPickerModeImport];
-                          vc.delegate = self;
-                          
-                          [self presentViewController:vc animated:YES completion:nil];
-                      }
-                      else if (response == 1) {
-                          UIImagePickerController *vc = [[UIImagePickerController alloc] init];
-                          vc.videoQuality = UIImagePickerControllerQualityTypeHigh;
-                          vc.delegate = self;
-                          BOOL available = [UIImagePickerController isSourceTypeAvailable:UIImagePickerControllerSourceTypeSavedPhotosAlbum];
-                          
-                          if(!available) {
-                              [Alerts info:self
-                                     title:NSLocalizedString(@"key_files_vc_error_photos_unavailable_title", @"Photo Library Unavailable")
-                                   message:NSLocalizedString(@"key_files_vc_error_photos_unavailable_message", @"Could not access Photo Library. Does Strongbox have Permission?")];
-                              return;
-                          }
-                          
-                          vc.mediaTypes = @[(NSString*)kUTTypeImage];
-                          vc.sourceType = UIImagePickerControllerSourceTypePhotoLibrary;
-                          
-                          [self presentViewController:vc animated:YES completion:nil];
-                      }
-                  }];
+        if(response == 0) {
+            UTType* type = [UTType typeWithIdentifier:(NSString*)kUTTypeItem];
+            UIDocumentPickerViewController *vc = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[type]];
+            
+            
+            vc.delegate = self;
+            self.docPickerMode = 2;
+            
+            [self presentViewController:vc animated:YES completion:nil];
+        }
+        else if (response == 1) {
+            UIImagePickerController *vc = [[UIImagePickerController alloc] init];
+            vc.videoQuality = UIImagePickerControllerQualityTypeHigh;
+            vc.delegate = self;
+            BOOL available = [UIImagePickerController isSourceTypeAvailable:UIImagePickerControllerSourceTypeSavedPhotosAlbum];
+            
+            if(!available) {
+                [Alerts info:self
+                       title:NSLocalizedString(@"key_files_vc_error_photos_unavailable_title", @"Photo Library Unavailable")
+                     message:NSLocalizedString(@"key_files_vc_error_photos_unavailable_message", @"Could not access Photo Library. Does Strongbox have Permission?")];
+                return;
+            }
+            
+            vc.mediaTypes = @[(NSString*)kUTTypeImage];
+            vc.sourceType = UIImagePickerControllerSourceTypePhotoLibrary;
+            
+            [self presentViewController:vc animated:YES completion:nil];
+        }
+    }];
 }
 
 - (void)imagePickerController:(UIImagePickerController *)picker didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> *)info {
@@ -182,14 +267,14 @@
         NSData* data = [Utils getImageDataFromPickedImage:info error:&error];
         
         if(!data) {
-            NSLog(@"Error: %@", error);
+            slog(@"Error: %@", error);
             [Alerts error:self
                     title:NSLocalizedString(@"key_files_vc_error_reading", @"Error Reading")
                     error:error];
         }
         else {
-            NSLog(@"info = [%@]", info);
-
+            slog(@"info = [%@]", info);
+            
             if(self.onDone) {
                 self.onDone(YES, nil, data);
                 [self.navigationController popViewControllerAnimated:YES];
@@ -203,46 +288,46 @@
 }
 
 - (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
-    NSLog(@"didPickDocumentsAtURLs: %@", urls);
-    NSURL* url = [urls objectAtIndex:0];
-    NSError* error;
-    
-    // https://stackoverflow.com/questions/25520453/ios8-uidocumentpickerviewcontroller-get-nsdata
-    
-    [url startAccessingSecurityScopedResource];
-    
-    __block NSData *data;
-    __block NSError *err;
-    NSFileCoordinator *coordinator = [[NSFileCoordinator alloc] init];
-    [coordinator coordinateReadingItemAtURL:url options:0 error:&error byAccessor:^(NSURL *newURL) {
-        data = [NSData dataWithContentsOfURL:newURL options:NSDataReadingUncached error:&err];
-    }];
-    
-    [url stopAccessingSecurityScopedResource];
-    
-    if(!data) {
-        NSLog(@"Error: %@", err);
-        [Alerts error:self
-                title:NSLocalizedString(@"key_files_vc_error_reading", @"There was an error reading the Key File")
-                error:err
-           completion:nil];
-        return;
-    }
 
-    if (controller == self.importDocPicker) { // Import / copy Local?
-        NSURL* localUrl = [self importToLocal:url data:data error:&error];
+    
+    NSURL* url = [urls objectAtIndex:0];
+    
+    if ( self.docPickerMode == 1 ) {
+        [self onKeyFileSuccessfullyExported:url];
+    }
+    else {
         
-        if(!localUrl) {
-            NSLog(@"Error: %@", error);
+        
+        if (! [url startAccessingSecurityScopedResource] ) {
+            slog(@"🔴 Could not securely access URL!");
+        }
+        
+        __block NSData *data;
+        __block NSError *err;
+        NSFileCoordinator *coordinator = [[NSFileCoordinator alloc] init];
+        NSError* error;
+
+        [coordinator coordinateReadingItemAtURL:url options:0 error:&error byAccessor:^(NSURL *newURL) {
+            data = [NSData dataWithContentsOfURL:newURL options:NSDataReadingUncached error:&err];
+        }];
+        
+        [url stopAccessingSecurityScopedResource];
+        
+        if(!data) {
+            slog(@"Error: %@", err);
             [Alerts error:self
-                    title:NSLocalizedString(@"key_files_vc_error_importing", @"There was an importing the Key File (does it already exist?)")
-                    error:error
+                    title:NSLocalizedString(@"key_files_vc_error_reading", @"There was an error reading the Key File")
+                    error:err
                completion:nil];
             return;
         }
+        
+        if ( controller == self.importDocPicker ) { 
+            [self importWithUrl:url data:data];
+        }
         else {
             if(!self.manageMode) {
-                self.onDone(YES, localUrl, nil);
+                self.onDone(YES, nil, data);
                 [self.navigationController popViewControllerAnimated:YES];
             }
             else {
@@ -250,9 +335,30 @@
             }
         }
     }
+}
+
+- (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller {
+    if ( self.tmpFileToDelete ) {
+        [NSFileManager.defaultManager removeItemAtURL:self.tmpFileToDelete error:nil];
+        self.tmpFileToDelete = nil;
+    }
+}
+
+- (void)importWithUrl:(NSURL*)url data:(NSData*)data {
+    NSError* error;
+    NSURL* localUrl = [self importToLocal:url.lastPathComponent data:data error:&error];
+    
+    if(!localUrl) {
+        slog(@"Error: %@", error);
+        [Alerts error:self
+                title:NSLocalizedString(@"key_files_vc_error_importing", @"There was an importing the Key File (does it already exist?)")
+                error:error
+           completion:nil];
+        return;
+    }
     else {
         if(!self.manageMode) {
-            self.onDone(YES, nil, data);
+            self.onDone(YES, localUrl, nil);
             [self.navigationController popViewControllerAnimated:YES];
         }
         else {
@@ -261,21 +367,23 @@
     }
 }
 
-- (NSURL*)importToLocal:(NSURL*)url data:(NSData*)data error:(NSError**)error {
-    NSURL* destination = [FileManager.sharedInstance.keyFilesDirectory URLByAppendingPathComponent:url.lastPathComponent];
+- (NSURL*)importToLocal:(NSString*)filename data:(NSData*)data error:(NSError**)error {
+    NSURL* destination = [StrongboxFilesManager.sharedInstance.keyFilesDirectory URLByAppendingPathComponent:filename];
     
-    NSLog(@"Source: %@", url);
-    NSLog(@"Destination: %@", destination);
+
+
     
     if (![[NSFileManager defaultManager] fileExistsAtPath:destination.path]) {
         NSError* err;
         NSUInteger flags = NSDataWritingWithoutOverwriting;
         if([data writeToURL:destination options:flags error:&err]) {
-            NSLog(@"Imported Key File Successfully: %@", destination.lastPathComponent);
+
             return destination;
         }
         else {
-            *error = err;
+            if ( error ) {
+                *error = err;
+            }
         }
     }
     else {
@@ -287,7 +395,7 @@
     return nil;
 }
 
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
     return 3;
@@ -301,13 +409,17 @@
         return self.keyFiles.count == 0 ? nil : NSLocalizedString(@"key_files_vc_section_header_imported", @"Imported Key Files (Auto-Fill Enabled)");
     }
     else if (section == 2) {
-        return self.otherFiles.count == 0 ? nil : NSLocalizedString(@"key_files_vc_section_header_local", @"Application Local Files");
+        return self.otherFiles.count == 0 ? nil : NSLocalizedString(@"key_files_vc_section_header_local", @"Documents Folder (Auto-Fill not supported)");
     }
-
+    
     return nil;
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    NSInteger totalRows = (self.manageMode ? 0 : 1) + self.keyFiles.count + self.otherFiles.count;
+    
+    [self.tableView setEmptyTitle:(totalRows == 0) ? [self getTitleForEmptyDataSet] : nil];
+    
     if(section == 0) {
         return self.manageMode ? 0 : 1;
     }
@@ -360,10 +472,10 @@
         if([keyFile isEqual:self.selectedUrl]) {
             cell.accessoryType = UITableViewCellAccessoryCheckmark;
         }
-
+        
         cell.detailTextLabel.text = self.manageMode ? [self getAssociatedDatabaseSubtitle:indexPath] : nil;
     }
-
+    
     return cell;
 }
 
@@ -404,16 +516,16 @@
                                                                           handler:^(UITableViewRowAction * _Nonnull action, NSIndexPath * _Nonnull indexPath) {
         [self importLocalFile:indexPath];
     }];
-    importAction.backgroundColor = UIColor.blueColor;
+    importAction.backgroundColor = UIColor.systemBlueColor;
     
     return indexPath.section == 2 ? @[removeAction, importAction] : @[removeAction];
 }
 
 - (void)importLocalFile:(NSIndexPath*)indexPath {
     NSURL* url = self.otherFiles[indexPath.row];
-    NSURL *destination = [FileManager.sharedInstance.keyFilesDirectory URLByAppendingPathComponent:url.lastPathComponent];
+    NSURL *destination = [StrongboxFilesManager.sharedInstance.keyFilesDirectory URLByAppendingPathComponent:url.lastPathComponent];
     
-    NSLog(@"Importing Local Key File: [%@] => [%@]", url, destination);
+
     
     [Alerts twoOptionsWithCancel:self
                            title:NSLocalizedString(@"key_files_vc_remove_after_import_title", @"Remove After Import")
@@ -447,7 +559,7 @@
     NSURL* url;
     
     if(indexPath.section == 0) {
-        return; // WTF
+        return; 
     }
     else if(indexPath.section == 1) {
         url = self.keyFiles[indexPath.row];
@@ -466,7 +578,7 @@
 }
 
 - (NSString*)getAssociatedDatabaseSubtitle:(NSIndexPath*)indexPath {
-    NSArray<SafeMetaData*>* assoc = [self getAssociatedDatabase:indexPath.section == 1 ? self.keyFiles[indexPath.row] : self.otherFiles[indexPath.row]];
+    NSArray<DatabasePreferences*>* assoc = [self getAssociatedDatabase:indexPath.section == 1 ? self.keyFiles[indexPath.row] : self.otherFiles[indexPath.row]];
     
     if(assoc.count) {
         return [NSString stringWithFormat:
@@ -478,10 +590,174 @@
     }
 }
 
-- (NSArray<SafeMetaData*>*)getAssociatedDatabase:(NSURL*)url {
-    return [SafesList.sharedInstance.snapshot filter:^BOOL(SafeMetaData * _Nonnull obj) {
-        return [obj.keyFileUrl isEqual:url];
+- (NSArray<DatabasePreferences*>*)getAssociatedDatabase:(NSURL*)url {
+    return [DatabasePreferences filteredDatabases:^BOOL(DatabasePreferences * _Nonnull obj) {
+        if (obj.keyFileBookmark) {
+            NSURL* dbUrl = [BookmarksHelper getExpressReadOnlyUrlFromBookmark:obj.keyFileBookmark];
+            return [dbUrl isEqual:url];
+        }
+        else {
+            return NO;
+        }
     }];
+}
+
+
+
+- (void)onImportKeyFile {
+    UTType* type = [UTType typeWithIdentifier:(NSString*)kUTTypeItem];
+    self.importDocPicker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[type]];
+    self.importDocPicker.delegate = self;
+    self.docPickerMode = 0;
+    
+    [self presentViewController:self.importDocPicker animated:YES completion:nil];
+}
+
+- (void)onCreateKeyFile {
+#ifndef IS_APP_EXTENSION
+    __weak KeyFilesTableViewController* weakSelf = self;
+    
+    KeyFile* keyFile = [KeyFileManagement generateNewV2];
+        
+    UIViewController* vc = [SwiftUIViewFactory showKeyFileGeneratorScreenWithKeyFile:keyFile
+                                                      onPrint:^{
+        [weakSelf onPrintKeyFileRecoverySheet:keyFile];
+    } onSave:^BOOL{
+        [weakSelf dismissViewControllerAnimated:YES 
+                                     completion:^{
+            [weakSelf onSaveKeyFile:keyFile];
+        }];
+
+         return NO;
+    } onDismiss:^{
+        [weakSelf dismissViewControllerAnimated:YES completion:nil];
+    }];
+    
+    [self presentViewController:vc animated:YES completion:nil];
+#endif
+}
+
+- (void)onPrintKeyFileRecoverySheet:(KeyFile*)keyFile {
+#ifndef IS_APP_EXTENSION
+    [keyFile printRecoverySheet:self];
+#endif
+}
+
+- (void)onRecoverKeyFile {
+#ifndef IS_APP_EXTENSION
+    __weak KeyFilesTableViewController* weakSelf = self;
+
+    UIViewController* vc = [SwiftUIViewFactory showKeyFileRecoveryScreenOnRecover:^(KeyFile * _Nonnull keyFile) {
+        [weakSelf dismissViewControllerAnimated:YES completion:^{
+            [weakSelf onSaveKeyFile:keyFile];
+        }];
+    } onDismiss:^{
+        [weakSelf dismissViewControllerAnimated:YES completion:nil];
+    }];
+
+    [self presentViewController:vc animated:YES completion:nil];
+#endif
+}
+
+- (BOOL)onSaveKeyFile:(KeyFile*)keyFile {
+    NSURL* url = [self saveKeyFileToTemp:keyFile];
+    if ( !url ) {
+        [Alerts error:self error:[Utils createNSError:@"Could not save tmp key file!" errorCode:1244]];
+        return NO;
+    }
+        
+    UIDocumentPickerViewController* docPicker = [[UIDocumentPickerViewController alloc] initForExportingURLs:@[url] asCopy:YES];
+    docPicker.delegate = self;
+    self.docPickerMode = 1;
+    self.keyFileToSave = keyFile;
+    self.tmpFileToDelete = url;
+    
+    [self presentViewController:docPicker animated:YES completion:nil];
+    
+    return NO;
+}
+
+- (NSURL*)saveKeyFileToTemp:(KeyFile*)keyFile {
+    NSData* data = [keyFile.xml dataUsingEncoding:NSUTF8StringEncoding allowLossyConversion:YES];
+    if ( !data ) {
+        slog(@"🔴 Could not get key file data");
+        return nil;
+    }
+
+    NSString* filename = @"key-file.keyx";
+
+    NSString* path = [NSTemporaryDirectory() stringByAppendingPathComponent:filename];
+    NSURL* url = [NSURL fileURLWithPath:path];
+
+    NSError* error;
+    if ( ![data writeToURL:url options:NSDataWritingWithoutOverwriting error:&error] ) {
+        slog(@"🔴 Error in saveKeyFileToTemp %@", error);
+        return nil;
+    }
+
+    return url;
+}
+
+- (void)onKeyFileSuccessfullyExported:(NSURL*)url {
+    
+    
+    if ( self.tmpFileToDelete ) {
+        [NSFileManager.defaultManager removeItemAtURL:self.tmpFileToDelete error:nil];
+        self.tmpFileToDelete = nil;
+    }
+
+    NSString* filename = url.lastPathComponent;
+
+    [self onExportedNewKeyFileDone:self.keyFileToSave filename:filename];
+}
+
+- (void)onExportedNewKeyFileDone:(KeyFile*)keyFile filename:(NSString*)filename {
+    [Alerts yesNo:self
+            title:NSLocalizedString(@"kfm_key_file_saved_title", @"Key File Saved")
+          message:NSLocalizedString(@"kfm_key_file_saved_import_now_question", @"Your new key file was successfully saved.\n\nWould you like to import it into Strongbox now?")
+           action:^(BOOL response) {
+        if ( response ) {
+            [self onImportNewKeyFile:keyFile filename:filename];
+        }
+    }];
+}
+
+- (void)onImportNewKeyFile:(KeyFile*)keyFile filename:(NSString*)filename {
+    NSData* data = [keyFile.xml dataUsingEncoding:NSUTF8StringEncoding allowLossyConversion:YES];
+    if ( !data ) {
+        slog(@"🔴 Could not get key file data");
+        return;
+    }
+    
+    NSString *uniq = [self getUniqueImportFilename:filename];
+    
+    NSError* error;
+    [self importToLocal:uniq data:data error:&error];
+    
+    if ( error ) {
+        slog(@"🔴 Could not write key file... [%@]", error);
+        [Alerts error:self error:error];
+    }
+    else {
+        [self refresh];
+    }
+}
+
+- (NSString*)getUniqueImportFilename:(NSString*)base {
+    NSString* ext = base.pathExtension;
+    NSString* withoutExt = [base stringByDeletingPathExtension];
+
+    NSString* filename = [withoutExt stringByAppendingPathExtension:ext];
+    NSURL* destination = [StrongboxFilesManager.sharedInstance.keyFilesDirectory URLByAppendingPathComponent:filename];
+    
+    int i = 1;
+    while ( [NSFileManager.defaultManager fileExistsAtPath:destination.path] ) {
+        NSString* inc = [withoutExt stringByAppendingFormat:@"-%d", i++];
+        filename = [inc stringByAppendingPathExtension:ext];
+        destination = [StrongboxFilesManager.sharedInstance.keyFilesDirectory URLByAppendingPathComponent:filename];
+    }
+    
+    return filename;
 }
 
 @end

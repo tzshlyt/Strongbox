@@ -3,7 +3,7 @@
 //  Strongbox
 //
 //  Created by Mark on 02/11/2018.
-//  Copyright © 2018 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import "V3BinariesList.h"
@@ -31,7 +31,7 @@
     return [super getChildHandler:xmlElementName];
 }
 
-- (BOOL)addKnownChildObject:(nonnull NSObject *)completedObject withXmlElementName:(nonnull NSString *)withXmlElementName {
+- (BOOL)addKnownChildObject:(id<XmlParsingDomainObject>)completedObject withXmlElementName:(nonnull NSString *)withXmlElementName {
     if([withXmlElementName isEqualToString:kBinaryElementName]) {
         [self.binaries addObject:(V3Binary*)completedObject];
         return YES;
@@ -40,18 +40,25 @@
     return NO;
 }
 
-- (XmlTree *)generateXmlTree {
-    XmlTree* ret = [[XmlTree alloc] initWithXmlElementName:kV3BinariesListElementName];
-    
-    ret.node = self.nonCustomisedXmlTree.node;
-    
+- (BOOL)writeXml:(id<IXmlSerializer>)serializer {
+    if(![serializer beginElement:self.originalElementName
+                            text:self.originalText
+                      attributes:self.originalAttributes]) {
+        return NO;
+    }
+
     for (V3Binary *binary in self.binaries) {
-        [ret.children addObject:[binary generateXmlTree]];
+        if ( ! [binary writeXml:serializer] ) {
+            return NO;
+        }
+    }
+
+    if(![super writeUnmanagedChildren:serializer]) {
+        return NO;
     }
     
-    [ret.children addObjectsFromArray:self.nonCustomisedXmlTree.children];
-    
-    return ret;
+    [serializer endElement];
+    return YES;
 }
 
 @end

@@ -54,10 +54,10 @@
             
             NSString *subgroup = [subGroupFullSuffix substringWithRange:range];
             
-            // Don't add root/null group(s)... not interesting or useful
+            
             
             if(![subgroup isEqualToString:@"."]) {
-                //NSLog(@"subgroup = [%@]", subgroup);
+                
                 NSString* unescaped = [Group unescapeGroupName:subgroup];
                 [subgroups addObject:unescaped];
             }
@@ -65,7 +65,7 @@
             subGroupFullSuffix = [subGroupFullSuffix substringFromIndex:range.location + range.length];
         }
         else {
-            NSLog(@"Do not know how to process this group name/path. Skipping.");
+            slog(@"Do not know how to process this group name/path. Skipping.");
         }
     }
     

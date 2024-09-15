@@ -3,20 +3,20 @@
 //  Strongbox-iOS
 //
 //  Created by Mark on 05/06/2019.
-//  Copyright © 2019 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import <UIKit/UIKit.h>
-#import "SafeMetaData.h"
+#import "DatabasePreferences.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
 @interface WelcomeCreateDoneViewController : UIViewController
 
-@property SafeMetaData* database;
+@property DatabasePreferences* database;
 @property NSString* password;
 
-@property (nonatomic, copy) void (^onDone)(BOOL addExisting, SafeMetaData* _Nullable databaseToOpen);
+@property (nonatomic, copy) void (^onDone)(BOOL addExisting, DatabasePreferences* _Nullable databaseToOpen);
 
 @end
 

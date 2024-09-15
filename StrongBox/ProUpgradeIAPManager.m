@@ -3,23 +3,40 @@
 //  Strongbox-iOS
 //
 //  Created by Mark on 04/02/2019.
-//  Copyright © 2019 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import "ProUpgradeIAPManager.h"
 #import "NSArray+Extensions.h"
 #import "Utils.h"
-#import "Settings.h"
 #import "RMStore.h"
 #import "RMStoreAppReceiptVerifier.h"
 #import "RMAppReceipt.h"
-#import "Alerts.h"
+#import "Model.h"
+#import "CrossPlatform.h"
+#import "NSDate+Extensions.h"
+
+#if TARGET_OS_IPHONE
+#import "CustomizationManager.h"
+#elif TARGET_OS_MAC
+#import "MacCustomizationManager.h"
+#endif
+
+static NSString* const kIapProId =  @"com.markmcguill.strongbox.pro";
+static NSString* const kMonthly =  @"com.strongbox.markmcguill.upgrade.pro.monthly";
+static NSString* const kYearly =  @"com.strongbox.markmcguill.upgrade.pro.yearly";
 
 @interface ProUpgradeIAPManager ()
 
 @property (nonatomic) UpgradeManagerState readyState;
 @property (nonatomic, strong) NSDictionary<NSString*, SKProduct *> *products;
 @property (nonatomic) RMStoreAppReceiptVerifier* receiptVerifier;
+
+@property (readonly) id<ApplicationPreferences> preferences;
+
+@property (readonly, nullable) SKProduct* lifeTimeProduct;
+
+@property (readonly) BOOL isVerifiedReceipt;
 
 @end
 
@@ -35,145 +52,235 @@
     return sharedInstance;
 }
 
+- (id<ApplicationPreferences>)preferences {
+    return CrossPlatformDependencies.defaults.applicationPreferences;
+}
+
 -(UpgradeManagerState)state {
     return self.readyState;
 }
 
-- (void)initialize {
+- (BOOL)isVerifiedReceipt {
+#ifdef DEBUG
+    slog(@"⚠️⚠️⚠️⚠️⚠️⚠️ DEBUG Faking Verified Receipt DEBUG 🔴🔴🔴🔴🔴🔴🔴");
+    return YES;
+#else
+    RMStoreAppReceiptVerifier *verificator = [[RMStoreAppReceiptVerifier alloc] init];
+    return [verificator verifyAppReceipt];
+#endif
+}
+
+- (void)initialize {    
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0L), ^{
+        slog(@"✅ ProUpgradeIAPManager::initialize - Loading Products and Checking Receipt for entitlements");
+        
         [self loadAppStoreProducts];
         
-        // See if we can auto upgrade the app if Pro is available
         
-        RMStoreAppReceiptVerifier *verificator = [[RMStoreAppReceiptVerifier alloc] init];
-        if ([verificator verifyAppReceipt]) {
-            NSLog(@"App Receipt looks ok... checking for Valid Pro IAP purchases...");
-            [self checkProEntitlements:nil];
+        
+        if ( self.isVerifiedReceipt ) {
+            slog(@"App Receipt looks ok... checking for Valid Pro IAP purchases...");
+            [self checkVerifiedReceiptIsEntitledToPro:NO];
         }
         else {
-            NSLog(@"Startup receipt check failed...");
+            
+            slog(@"Startup receipt check failed...");
         }
+        
+        [self listenForPurchases];
     });
 }
 
-- (void)performScheduledProEntitlementsCheckIfAppropriate:(UIViewController*)vc {
-    if(Settings.sharedInstance.lastEntitlementCheckAttempt != nil) {
+- (void)listenForPurchases {
+    [NSNotificationCenter.defaultCenter addObserver:self
+                                           selector:@selector(onPurchaseNotification)
+                                               name:RMSKPaymentTransactionFinished
+                                             object:nil];
+}
+
+- (void)onPurchaseNotification {
+    slog(@"♻️♻️♻️♻️♻️♻️♻️♻️♻️♻️♻️ onPurchaseNotification ♻️♻️♻️♻️♻️♻️♻️♻️♻️♻️♻️♻️♻️♻️♻️");
+    
+    [self checkReceiptForTrialAndProEntitlements];
+}
+
+- (NSDate*)currentSubscriptionRenewalOrExpiry {
+    if ( self.hasActiveYearlySubscription ) {
+        return [RMAppReceipt.bundleReceipt expirationDateFor:kYearly];
+    }
+    else if ( self.hasActiveMonthlySubscription ) {
+        return [RMAppReceipt.bundleReceipt expirationDateFor:kMonthly];
+    }
+    return nil;
+}
+
+- (void)performScheduledProEntitlementsCheckIfAppropriate {
+    slog(@"🐞 performScheduledProEntitlementsCheckIfAppropriate");
+    
+    if ( self.preferences.lastEntitlementCheckAttempt != nil ) {
         NSCalendar *gregorian = [[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian];
         
         NSDateComponents *components = [gregorian components:NSCalendarUnitDay
-                                                    fromDate:Settings.sharedInstance.lastEntitlementCheckAttempt
+                                                    fromDate:self.preferences.lastEntitlementCheckAttempt
                                                       toDate:[NSDate date]
                                                      options:0];
         
         NSInteger days = [components day];
         
-        NSLog(@"%ld days since last entitlement check... [%@]", (long)days, Settings.sharedInstance.lastEntitlementCheckAttempt);
+        slog(@"🐞 %ld days since last entitlement check... [%@]", (long)days, self.preferences.lastEntitlementCheckAttempt);
         
-        if(days == 0) { // Already checked today...
-            NSLog(@"Already checked entitlements today... not rechecking...");
+        if ( days == 0 ) { 
+            slog(@"🐞 Already checked entitlements today... not rechecking...");
             return;
         }
         
-        // Last check was successful and was less than a week ago... no need to check again so soon
-        
-        if(Settings.sharedInstance.numberOfEntitlementCheckFails == 0 &&  days < 3) {
-            NSLog(@"We had a successful check recently, not rechecking...");
+        if ( self.preferences.numberOfEntitlementCheckFails == 0 && days < 3 ) {
+            
+            
+            slog(@"🐞 We had a successful check recently, not rechecking...");
             return;
         }
         else {
-            NSLog(@"Rechecking since numberOfFails = %lu and days = %ld...", (unsigned long)Settings.sharedInstance.numberOfEntitlementCheckFails, (long)days);
+            slog(@"🐞 Rechecking since numberOfFails = %lu and days = %ld...", (unsigned long)self.preferences.numberOfEntitlementCheckFails, (long)days);
         }
     }
-
-    NSLog(@"Performing Scheduled Check of Entitlements...");
     
-    if(Settings.sharedInstance.numberOfEntitlementCheckFails < 8) {
-        [self checkReceiptAndProEntitlements:vc];
+    slog(@"🐞 Performing Scheduled Check of Entitlements...");
+     
+    if ( self.preferences.numberOfEntitlementCheckFails < 2 ) {
+        [self checkReceiptForTrialAndProEntitlements];
     }
     else {
-        // TODO: We should probably downgrade now... Something very funny is up
-        // For now - we will warn and ask to message support so we can handle this gracefully if someone is struggling...
-        [Alerts info:vc
-               title:NSLocalizedString(@"upgrade_mgr_entitlements_error_title", @"Strongbox Entitlements Error")
-             message:NSLocalizedString(@"upgrade_mgr_entitlements_error_message", @"Strongbox is having trouble verifying its App Store entitlements. This could lead to a future App downgrade. Please contact support@strongboxsafe.com to get some help with this.")];
-    
-        [self checkReceiptAndProEntitlements:vc];
+        self.preferences.appHasBeenDowngradedToFreeEdition = YES;
+        self.preferences.hasPromptedThatAppHasBeenDowngradedToFreeEdition = NO;
+        self.preferences.numberOfEntitlementCheckFails = 0; 
+        [self.preferences setPro:NO];
     }
 }
 
-- (void)checkReceiptAndProEntitlements:(UIViewController*)vc { // Don't want to do a refresh if we're launching...
-    Settings.sharedInstance.lastEntitlementCheckAttempt = [NSDate date];
+- (void)checkReceiptForTrialAndProEntitlements {
+    [self checkReceiptForTrialAndProEntitlements:NO completion:nil];
+}
+
+- (void)refreshReceiptAndCheckForProEntitlements:(void(^)(void))completion {
+    [self checkReceiptForTrialAndProEntitlements:YES completion:completion];
+}
+
+- (void)checkReceiptForTrialAndProEntitlements:(BOOL)userInitiated completion:(void(^_Nullable)(void))completion { 
     
-    RMStoreAppReceiptVerifier *verificator = [[RMStoreAppReceiptVerifier alloc] init];
-    if ([verificator verifyAppReceipt]) {
-        NSLog(@"App Receipt looks ok... checking for Valid Pro IAP purchases...");
-        [self checkProEntitlements:vc];
+    slog(@"🚀 checkReceiptForTrialAndProEntitlements... ");
+    
+    if ( !userInitiated ) {
+        self.preferences.lastEntitlementCheckAttempt = [NSDate date];
+    }
+
+    if ( self.isVerifiedReceipt ) {
+        slog(@"App Receipt looks ok... checking for Valid Pro IAP purchases...");
+        [self checkVerifiedReceiptIsEntitledToPro:userInitiated];
+        if (completion) {
+            completion();
+        }
     }
     else {
-        NSLog(@"Receipt Not Good... Refreshing...");
+        slog(@"Receipt Not Good... Refreshing...");
 
         [[RMStore defaultStore] refreshReceiptOnSuccess:^{
-            if ([verificator verifyAppReceipt]) {
-                NSLog(@"App Receipt looks ok... checking for Valid Pro IAP purchases...");
-                [self checkProEntitlements:vc];
+            if ( self.isVerifiedReceipt ) {
+                slog(@"App Receipt looks ok... checking for Valid Pro IAP purchases...");
+                [self checkVerifiedReceiptIsEntitledToPro:userInitiated];
+                if (completion) completion();
             }
             else {
-                NSLog(@"Receipt not good even after refresh");
-                Settings.sharedInstance.numberOfEntitlementCheckFails++;
+                slog(@"Receipt not good even after refresh");
+                if ( !userInitiated ) {
+                    self.preferences.numberOfEntitlementCheckFails++;
+                }
+                if (completion) completion();
             }
         } failure:^(NSError *error) {
-            NSLog(@"Refresh Receipt - Error [%@]", error);
-            Settings.sharedInstance.numberOfEntitlementCheckFails++;
+            slog(@"Refresh Receipt - Error [%@]", error);
+            if ( !userInitiated ) {
+                self.preferences.numberOfEntitlementCheckFails++;
+            }
+            if (completion) completion();
         }];
     }
 }
 
-- (void)checkProEntitlements:(UIViewController*)vc {
-    Settings.sharedInstance.numberOfEntitlementCheckFails = 0;
+- (void)checkVerifiedReceiptIsEntitledToPro:(BOOL)userInitiated { 
+    if ( !userInitiated ) {
+        self.preferences.numberOfEntitlementCheckFails = 0;
+    }
     
-    if([self receiptHasProEntitlements]) {
-        NSLog(@"Upgrading App to Pro as Entitlement found in Receipt...");
-        [Settings.sharedInstance setPro:YES];
+#if TARGET_OS_IPHONE
+    if ( CustomizationManager.isAProBundle ) {
+#elif TARGET_OS_MAC
+    if ( MacCustomizationManager.isAProBundle ) {
+#endif
+        slog(@"Upgrading App to Pro as Receipt is Good and this is a Pro edition...");
+        [self.preferences setPro:YES];
+        self.preferences.appHasBeenDowngradedToFreeEdition = NO;
+    }
+    else if ( [self receiptHasProEntitlements] ) {
+        slog(@"Upgrading App to Pro as Entitlement found in Receipt...");
+        [self.preferences setPro:YES];
+        self.preferences.appHasBeenDowngradedToFreeEdition = NO;
     }
     else {
-        if(Settings.sharedInstance.isPro) {
-            NSLog(@"Downgrading App as Entitlement NOT found in Receipt...");
-            
-            if(vc) {
-                [Alerts info:vc
-                       title:NSLocalizedString(@"upgrade_mgr_downgrade_title", @"Strongbox Downgrade")
-                     message:NSLocalizedString(@"upgrade_mgr_downgrade_message", @"It looks like this app is no longer entitled to all the Pro features. These will be limited now. If you believe this is incorrect, please get in touch with support@strongboxsafe.com to get some help with this. Please include your purchase receipt.")];
+        if ( self.preferences.isPro ) {
+
+                                  
+            if ( !userInitiated ) {
+                slog(@"PRO Entitlement NOT found in valid Receipt, incrementing fail count to allow for grace period but very likely app not entitled to Pro...");
+                self.preferences.numberOfEntitlementCheckFails++;
             }
-            [Settings.sharedInstance setPro:NO];
+            else {
+                slog(@"PRO Entitlement NOT found in valid Receipt");
+            }
+            
+            
+
+
+
         }
         else {
-            NSLog(@"App Pro Entitlement not found in Receipt... leaving downgraded...");
+            slog(@"App Pro Entitlement not found in Receipt... leaving downgraded...");
         }
     }
 }
 
 - (BOOL)receiptHasProEntitlements {
-    BOOL lifetime = [[RMAppReceipt bundleReceipt] containsInAppPurchaseOfProductIdentifier:kIapProId]; // TODO: What about cancellation?
+    RMAppReceipt* receipt = [RMAppReceipt bundleReceipt];
+    
+    if ( receipt == nil ) {
+        slog(@"🔴 NIL Bundle Receipt");
+        return NO;
+    }
+    
+    BOOL lifetime = [receipt containsInAppPurchaseOfProductIdentifier:kIapProId]; 
     
     NSDate* now = [NSDate date];
-    BOOL monthly = [[RMAppReceipt bundleReceipt] containsActiveAutoRenewableSubscriptionOfProductIdentifier:kMonthly forDate:now];
-    BOOL threeMonthly = [[RMAppReceipt bundleReceipt] containsActiveAutoRenewableSubscriptionOfProductIdentifier:k3Monthly forDate:now];
-    BOOL yearly = [[RMAppReceipt bundleReceipt] containsActiveAutoRenewableSubscriptionOfProductIdentifier:kYearly forDate:now];
+    BOOL monthly = [receipt containsActiveAutoRenewableSubscriptionOfProductIdentifier:kMonthly forDate:now];
+    BOOL yearly = [receipt containsActiveAutoRenewableSubscriptionOfProductIdentifier:kYearly forDate:now];
     
-    NSLog(@"Found Lifetime=%d, Monthly=%d, 3 Monthly=%d, Yearly=%d", lifetime, monthly, threeMonthly, yearly);
+    slog(@"Found Lifetime=%d, Monthly=%d, Yearly=%d", lifetime, monthly, yearly);
     
-    return lifetime || monthly || threeMonthly || yearly;
+    return lifetime || monthly || yearly;
 }
 
 - (void)loadAppStoreProducts {
     self.readyState = kWaitingOnAppStoreProducts;
     self.products = @{};
 
-    NSSet *products = [NSSet setWithArray:@[kIapProId, kMonthly, kYearly]]; // k3Monthly,
+    NSSet *products = [NSSet setWithArray:@[kIapProId, kMonthly, kYearly]];
+    
     [[RMStore defaultStore] requestProducts:products success:^(NSArray *products, NSArray *invalidProductIdentifiers) {
         self.products = [NSMutableDictionary dictionary];
         if (products) {
             for (SKProduct *validProduct in products) {
+                slog(@"Got App Store Product [%@-%@]",
+                      validProduct.productIdentifier,
+                      validProduct.price);
                 [self.products setValue:validProduct forKey:validProduct.productIdentifier];
             }
         }
@@ -182,7 +289,7 @@
             self.productsAvailableNotify();
         }
     } failure:^(NSError *error) {
-        NSLog(@"Error Retrieving IAP Products: [%@]", error);
+        slog(@"Error Retrieving IAP Products: [%@]", error);
         self.readyState = kCouldNotGetProducts;
         if(self.productsAvailableNotify) {
             self.productsAvailableNotify();
@@ -196,32 +303,91 @@
 
 - (void)restorePrevious:(RestoreCompletionBlock)completion {
     [RMStore.defaultStore restoreTransactionsOnSuccess:^(NSArray *transactions) {
-        NSLog(@"Restore Done Successfully: [%@]", transactions);
+        slog(@"Restore Done Successfully: [%@]", transactions);
 
-        [self checkReceiptAndProEntitlements:nil];
+        for (SKPaymentTransaction* pt in transactions) {
+            slog(@"Restored: %@-%@", pt.originalTransaction.payment.productIdentifier, pt.originalTransaction.transactionDate);
+        }
         
-        completion(nil);
+        [self checkReceiptForTrialAndProEntitlements];
+        
+        if ( completion ) {
+            completion(nil);
+        }
     } failure:^(NSError *error) {
-        completion(error);
+        if ( completion ) {
+            completion(error);
+        }
     }];
 }
 
-- (void)purchase:(NSString *)productId completion:(PurchaseCompletionBlock)completion {
+- (void)purchaseAndCheckReceipts:(SKProduct *)product completion:(PurchaseCompletionBlock)completion {
     if(![SKPaymentQueue canMakePayments]) {
         completion([Utils createNSError:NSLocalizedString(@"upgrade_mgr_purchases_are_disabled", @"Purchases are disabled on your device.") errorCode:-1]);
         return;
     }
     
-    [[RMStore defaultStore] addPayment:productId success:^(SKPaymentTransaction *transaction) {
-        NSLog(@"Product purchased: [%@]", transaction);
+    [[RMStore defaultStore] addPayment:product.productIdentifier
+                               success:^(SKPaymentTransaction *transaction) {
+        slog(@"Product purchased: [%@]", transaction);
         
-        [self checkReceiptAndProEntitlements:nil];
+        [self checkReceiptForTrialAndProEntitlements];
 
         completion(nil);
     } failure:^(SKPaymentTransaction *transaction, NSError *error) {
-        NSLog(@"Something went wrong: [%@] error = [%@]", transaction, error);
+        slog(@"Something went wrong: [%@] error = [%@]", transaction, error);
         completion(error);
     }];
 }
 
+- (BOOL)hasPurchasedLifeTime {
+    if (RMAppReceipt.bundleReceipt == nil) {
+        slog(@"bundleReceipt = nil");
+        return NO;
+    }
+
+    RMAppReceiptIAP *iap = [RMAppReceipt.bundleReceipt.inAppPurchases firstOrDefault:^BOOL(RMAppReceiptIAP *iap) {
+        return [iap.productIdentifier isEqualToString:kIapProId];
+    }];
+    
+    return iap != nil;
+}
+
+- (BOOL)isLegacyLifetimeIAPPro {
+    return self.hasPurchasedLifeTime;
+}
+
+- (BOOL)hasActiveYearlySubscription {
+    NSDate* now = [NSDate date];
+    return [[RMAppReceipt bundleReceipt] containsActiveAutoRenewableSubscriptionOfProductIdentifier:kYearly forDate:now];
+}
+
+- (BOOL)hasActiveMonthlySubscription {
+    NSDate* now = [NSDate date];
+    return [[RMAppReceipt bundleReceipt] containsActiveAutoRenewableSubscriptionOfProductIdentifier:kMonthly forDate:now];
+}
+
+
+
+- (SKProduct *)monthlyProduct {
+    return self.availableProducts[kMonthly];
+}
+
+- (SKProduct *)yearlyProduct {
+    return self.availableProducts[kYearly];
+}
+
+- (SKProduct *)lifeTimeProduct {
+    return self.availableProducts[kIapProId];
+}
+
+- (BOOL)isFreeTrialAvailable {
+    SKProduct* product = self.yearlyProduct;
+    SKProductDiscount* introPrice = product ? product.introductoryPrice : nil;
+    
+    BOOL ret = (introPrice != nil) && [introPrice.price isEqual:NSDecimalNumber.zero];
+    
+    return ret;
+}
+    
 @end

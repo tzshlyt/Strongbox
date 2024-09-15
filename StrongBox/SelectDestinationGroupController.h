@@ -9,13 +9,18 @@
 #import <UIKit/UIKit.h>
 #import "Model.h"
 
+NS_ASSUME_NONNULL_BEGIN
+
 @interface SelectDestinationGroupController : UITableViewController
 
 @property (nonatomic, strong, nonnull) Model *viewModel;
 @property Node * _Nonnull currentGroup;
-@property NSArray<Node*> * _Nonnull itemsToMove;
-@property (weak, nonatomic, nullable) IBOutlet UIBarButtonItem * buttonMove;
+@property BOOL hideAddGroupButton;
+@property NSString* customSelectDestinationButtonTitle;
 
-@property (nonatomic, copy, nonnull) void (^onDone)(void);
+@property (nonatomic, copy, nonnull) BOOL (^validateDestination)(Node * _Nonnull destinationGroup);
+@property (nonatomic, copy, nonnull) void (^onSelectedDestination)(Node * _Nonnull destination);
 
 @end
+
+NS_ASSUME_NONNULL_END

@@ -3,32 +3,41 @@
 //  Strongbox
 //
 //  Created by Mark on 17/10/2018.
-//  Copyright © 2018 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import <Foundation/Foundation.h>
 #import "BaseXmlDomainObjectHandler.h"
-#import "GenericTextStringElementHandler.h"
-#import "GenericTextUuidElementHandler.h"
 #import "Times.h"
 #import "Entry.h"
+#import "KeePassGroupOrEntry.h"
+#import "CustomData.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
-@interface KeePassGroup : BaseXmlDomainObjectHandler
+@interface KeePassGroup : BaseXmlDomainObjectHandler <KeePassGroupOrEntry>
 
 - (instancetype)initWithContext:(XmlProcessingContext*)context;
--(instancetype)initAsKeePassRoot:(XmlProcessingContext*)context;
+- (instancetype)initAsKeePassRoot:(XmlProcessingContext*)context;
 
-@property (nonatomic) NSMutableArray<KeePassGroup*>* groups;
-@property (nonatomic) NSMutableArray<Entry*>* entries;
-@property (nonatomic) GenericTextStringElementHandler* name;
-@property (nonatomic) GenericTextUuidElementHandler* uuid;
-@property (nonatomic, nullable) GenericTextStringElementHandler* iconId;
-@property (nonatomic, nullable) GenericTextUuidElementHandler* customIconUuid;
-
-@property (nonatomic) NSNumber* icon;
+@property (nonatomic) NSUUID* uuid;
+@property (nonatomic) NSString* name;
+@property (nonatomic, nullable) NSString* notes; 
+@property (nonatomic, nullable) NSNumber* icon;
 @property (nonatomic, nullable) NSUUID* customIcon;
+@property (nonatomic) Times* times;
+@property BOOL isExpanded;
+@property (nonatomic, nullable) NSString* defaultAutoTypeSequence; 
+@property (nonatomic, nullable) NSNumber* enableAutoType; 
+@property (nonatomic, nullable) NSNumber* enableSearching; 
+@property (nonatomic, nullable) NSUUID* lastTopVisibleEntry; 
+@property (nonatomic, nullable) CustomData* customData;
+@property (nonatomic) NSMutableArray<id<KeePassGroupOrEntry>>* groupsAndEntries;
+
+
+
+@property NSMutableSet<NSString*> *tags;
+@property (nullable) NSUUID* previousParentGroup;
 
 @end
 

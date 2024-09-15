@@ -1,67 +1,98 @@
 //
 //  SafesListTableViewController.m
-//  Strongbox Auto Fill
+//  Strongbox AutoFill
 //
 //  Created by Mark on 11/10/2018.
-//  Copyright © 2018 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import "SafesListTableViewController.h"
-#import "SafeMetaData.h"
-#import "SafesList.h"
+#import "DatabasePreferences.h"
+#import "DatabasePreferences.h"
 #import "SafeStorageProviderFactory.h"
-#import "Settings.h"
 #import <AuthenticationServices/AuthenticationServices.h>
 #import "CredentialProviderViewController.h"
-#import "OpenSafeSequenceHelper.h"
-#import <SVProgressHUD/SVProgressHUD.h>
-#import "PickCredentialsTableViewController.h"
-#import "CacheManager.h"
+#import "SVProgressHUD.h"
 #import "NSArray+Extensions.h"
 #import "DatabaseCell.h"
 #import "Utils.h"
 #import "LocalDeviceStorageProvider.h"
 #import "FilesAppUrlBookmarkProvider.h"
 #import "Alerts.h"
-#import "StrongboxUIDocument.h"
+#import "SyncManager.h"
+#import "NSDate+Extensions.h"
+#import "UITableView+EmptyDataSet.h"
+#import "IOSCompositeKeyDeterminer.h"
+#import "DatabaseUnlocker.h"
+#import "DuressActionHelper.h"
+#import "AppPreferences.h"
+#import "WorkingCopyManager.h"
 
 @interface SafesListTableViewController ()
 
-@property NSArray<SafeMetaData*> *safes;
+@property NSArray<DatabasePreferences*> *safes;
+@property (weak, nonatomic) IBOutlet UIBarButtonItem *buttonPreferences;
 
 @end
 
 @implementation SafesListTableViewController
 
++ (UINavigationController *)navControllerfromStoryboard:(SelectAutoFillDatabaseCompletion)completion {
+    UIStoryboard *mainStoryboard = [UIStoryboard storyboardWithName:@"MainInterface" bundle:nil];
+    UINavigationController* ret = [mainStoryboard instantiateViewControllerWithIdentifier:@"SafesListNavigationController"];
+    
+    SafesListTableViewController* databasesList = ((SafesListTableViewController*)(ret.topViewController));
+    databasesList.completion = completion;
+    
+    return ret;
+}
+
 - (void)viewDidLoad {
     [super viewDidLoad];
- 
+
+    [self setupUi];
+    
     [self refreshSafes];
 
-    [self.tableView registerNib:[UINib nibWithNibName:kDatabaseCell bundle:nil] forCellReuseIdentifier:kDatabaseCell];
-    self.tableView.emptyDataSetSource = self;
-    self.tableView.emptyDataSetDelegate = self;
-    self.tableView.rowHeight = UITableViewAutomaticDimension;
-    self.tableView.separatorStyle = Settings.sharedInstance.showDatabasesSeparator ? UITableViewCellSeparatorStyleSingleLine : UITableViewCellSeparatorStyleNone;
-    self.tableView.tableFooterView = [UIView new];
     
-    [SVProgressHUD setViewForExtension:self.view];
     
-    if(Settings.sharedInstance.quickLaunchUuid) {
-        SafeMetaData* database = [self.safes firstOrDefault:^BOOL(SafeMetaData * _Nonnull obj) {
-            return [obj.uuid isEqualToString:Settings.sharedInstance.quickLaunchUuid];
+    if ( AppPreferences.sharedInstance.autoFillQuickLaunchUuid ) {
+        DatabasePreferences* database = [self.safes firstOrDefault:^BOOL(DatabasePreferences * _Nonnull obj) {
+            return [obj.uuid isEqualToString:AppPreferences.sharedInstance.autoFillQuickLaunchUuid];
         }];
      
-        if(database && [[self getInitialViewController] autoFillIsPossibleWithSafe:database]) {
+        if( database && [self autoFillIsPossibleWithSafe:database]) {
+            slog(@"AutoFill - Quick Launch configured and possible... launching db");
+            
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 [self openDatabase:database];
             });
+            return;
         }
     }
 }
 
+- (BOOL)autoFillIsPossibleWithSafe:(DatabasePreferences*)safeMetaData {
+    if(!safeMetaData.autoFillEnabled) {
+        return NO;
+    }
+        
+    return [WorkingCopyManager.sharedInstance isLocalWorkingCacheAvailable:safeMetaData.uuid modified:nil];
+}
+
+- (void)setupUi {
+    [self.tableView registerNib:[UINib nibWithNibName:kDatabaseCell bundle:nil] forCellReuseIdentifier:kDatabaseCell];
+    self.tableView.rowHeight = UITableViewAutomaticDimension;
+    self.tableView.separatorStyle = AppPreferences.sharedInstance.showDatabasesSeparator ? UITableViewCellSeparatorStyleSingleLine : UITableViewCellSeparatorStyleNone;
+    self.tableView.tableFooterView = [UIView new];
+    
+    [SVProgressHUD setViewForExtension:self.view];
+    
+    [self.buttonPreferences setImage:[UIImage systemImageNamed:@"gear"]];
+}
+
 - (void)refreshSafes {
-    self.safes = SafesList.sharedInstance.snapshot;
+    self.safes = DatabasePreferences.allDatabases;
 
     dispatch_async(dispatch_get_main_queue(), ^(void) {
         [self.tableView reloadData];
@@ -74,37 +105,9 @@
     [self.navigationController setToolbarHidden:NO];
     self.navigationController.toolbar.hidden = NO;
     self.navigationController.toolbarHidden = NO;
-    
-    showWelcomeMessageIfAppropriate(self);
 }
 
-- (void)viewDidAppear:(BOOL)animated {
-    [super viewDidAppear:animated];
-   
-    if (self.tableView.contentOffset.y < 0 && self.tableView.emptyDataSetVisible) {
-        self.tableView.contentOffset = CGPointZero;
-    }
-}
-
-- (IBAction)onCancel:(id)sender {
-    [[self getInitialViewController] cancel:nil];
-}
-
-- (void)emptyDataSet:(UIScrollView *)scrollView didTapView:(UIView *)view {
-    [self.extensionContext cancelRequestWithError:[NSError errorWithDomain:ASExtensionErrorDomain code:ASExtensionErrorCodeUserCanceled userInfo:nil]];
-}
-
-- (void)emptyDataSet:(UIScrollView *)scrollView didTapButton:(UIButton *)button
-{
-    [self.extensionContext cancelRequestWithError:[NSError errorWithDomain:ASExtensionErrorDomain code:ASExtensionErrorCodeUserCanceled userInfo:nil]];
-}
-
-- (UIImage *)imageForEmptyDataSet:(UIScrollView *)scrollView {
-    return [UIImage imageNamed:@"AppIcon-2019-bw-180"];
-}
-
-- (NSAttributedString *)titleForEmptyDataSet:(UIScrollView *)scrollView
-{
+- (NSAttributedString *)getTitleForEmptyDataSet {
     NSString *text = NSLocalizedString(@"autofill_safes_vc_empty_title", @"You Have No Databases Yet :(");
     
     NSDictionary *attributes = @{NSFontAttributeName: [UIFont boldSystemFontOfSize:18.0f],
@@ -113,8 +116,7 @@
     return [[NSAttributedString alloc] initWithString:text attributes:attributes];
 }
 
-- (NSAttributedString *)descriptionForEmptyDataSet:(UIScrollView *)scrollView
-{
+- (NSAttributedString *)getDescriptionForEmptyDataSet {
     NSString *text = NSLocalizedString(@"autofill_safes_vc_empty_subtitle", @"To use Strongbox for Password Autofill you need to add a database. You can do this in the Strongbox App.");
     
     NSMutableParagraphStyle *paragraph = [NSMutableParagraphStyle new];
@@ -128,160 +130,46 @@
     return [[NSAttributedString alloc] initWithString:text attributes:attributes];
 }
 
-#pragma mark - Table view data source
-
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    if (self.safes.count == 0) {
+        [self.tableView setEmptyTitle:[self getTitleForEmptyDataSet] description:[self getDescriptionForEmptyDataSet]];
+    }
+    else {
+        [self.tableView setEmptyTitle:nil];
+    }
+    
     return self.safes.count;
-}
-
-- (NSString*)getAutoFillCacheDate:(SafeMetaData*)safe {
-    NSDate* mod = [CacheManager.sharedInstance getAutoFillCacheModificationDate:safe];
-    return mod ? [NSString stringWithFormat:NSLocalizedString(@"autofill_safes_vc_cache_date_fmt", @"Cached%@: %@"),
-                  safe.alwaysUseCacheForAutoFill ?
-                  NSLocalizedString(@"autofill_safes_vc_cache_is_forced_fmt", @" (Forced)") : @"",
-                  friendlyDateStringVeryShort(mod)] : @"";
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     DatabaseCell *cell = [tableView dequeueReusableCellWithIdentifier:kDatabaseCell forIndexPath:indexPath];
-    SafeMetaData *safe = [self.safes objectAtIndex:indexPath.row];
+    DatabasePreferences *safe = [self.safes objectAtIndex:indexPath.row];
     
-    BOOL autoFillPossible = [[self getInitialViewController] autoFillIsPossibleWithSafe:safe];
-    [self populateDatabaseCell:cell database:safe disabled:!autoFillPossible];
+    BOOL autoFillPossible = [self autoFillIsPossibleWithSafe:safe];
+
+    [cell populateCell:safe disabled:!autoFillPossible autoFill:YES];
     
     return cell;
 }
 
-- (UIImage*)getStatusImage:(SafeMetaData*)database {
-    if(database.hasUnresolvedConflicts) {
-        return [UIImage imageNamed:@"error"];
-    }
-    else if([Settings.sharedInstance.quickLaunchUuid isEqualToString:database.uuid]) {
-        return [UIImage imageNamed:@"rocket"];
-    }
-    else if(database.readOnly) {
-        return [UIImage imageNamed:@"glasses"];
-    }
-    
-    return nil;
-}
-
-- (void)populateDatabaseCell:(DatabaseCell*)cell database:(SafeMetaData*)database disabled:(BOOL)disabled {
-    UIImage* statusImage = Settings.sharedInstance.showDatabaseStatusIcon ? [self getStatusImage:database] : nil;
-    
-    NSString* topSubtitle = [self getDatabaseCellSubtitleField:database field:Settings.sharedInstance.databaseCellTopSubtitle];
-    NSString* subtitle1 = [self getDatabaseCellSubtitleField:database field:Settings.sharedInstance.databaseCellSubtitle1];
-    NSString* subtitle2 = @""; // [self getDatabaseCellSubtitleField:database field:Settings.sharedInstance.databaseCellSubtitle2];
-    
-    
-    UIImage* databaseIcon = nil;
-    if(Settings.sharedInstance.showDatabaseIcon) {
-        if(database.storageProvider == kOneDrive) {
-            databaseIcon = [UIImage imageNamed:@"one-drive-icon-only-32x32"];
-        }
-        else {
-            id<SafeStorageProvider> provider = [SafeStorageProviderFactory getStorageProviderFromProviderId:database.storageProvider];
-            databaseIcon = [UIImage imageNamed:provider.icon];
-        }
-    }
-    
-    // If we can't do live show auto fill cache date in subtitle 2
-    
-    if(disabled) {
-        databaseIcon = Settings.sharedInstance.showDatabaseIcon ? [UIImage imageNamed:@"cancel_32"] : nil;
-        subtitle2 = database.autoFillEnabled ?
-        NSLocalizedString(@"autofill_safes_vc_item_subtitle_no_cache_yet", @"[No Auto Fill Cache File Yet]") :
-        NSLocalizedString(@"autofill_safes_vc_item_subtitle_cache_disabled", @"[Auto Fill Disabled]");
-    }
-    else {
-        if(![[self getInitialViewController] liveAutoFillIsPossibleWithSafe:database]) {
-            subtitle2 = [self getAutoFillCacheDate:database];
-        }
-    }
-    
-    [cell set:database.nickName
-  topSubtitle:topSubtitle
-    subtitle1:subtitle1
-    subtitle2:subtitle2
- providerIcon:databaseIcon
-  statusImage:statusImage
-     disabled:disabled];
-}
-
-- (NSString*)getDatabaseCellSubtitleField:(SafeMetaData*)database field:(DatabaseCellSubtitleField)field {
-    switch (field) {
-        case kDatabaseCellSubtitleFieldNone:
-            return nil;
-            break;
-        case kDatabaseCellSubtitleFieldFileName:
-            return database.fileName;
-            break;
-        case kDatabaseCellSubtitleFieldLastCachedDate:
-            return [self getAutoFillCacheDate:database];
-            break;
-        case kDatabaseCellSubtitleFieldStorage:
-            return [self getStorageString:database];
-            break;
-        default:
-            return @"<Unknown Field>";
-            break;
-    }
-}
-
-- (NSString*)getStorageString:(SafeMetaData*)database {
-    NSString* providerString;
-    if(database.storageProvider == kOneDrive) {
-        providerString = @"OneDrive";
-    }
-    else {
-        id<SafeStorageProvider> provider = [SafeStorageProviderFactory getStorageProviderFromProviderId:database.storageProvider];
-        providerString = provider.displayName;
-        if(database.storageProvider == kLocalDevice) {
-            providerString = [LocalDeviceStorageProvider.sharedInstance isUsingSharedStorage:database] ?
-            NSLocalizedString(@"autofill_safes_vc_storage_local_name", @"Local") :
-            NSLocalizedString(@"autofill_safes_vc_storage_local_docs_name", @"Local (Documents)");
-        }
-    }
-    
-    return providerString;
-}
-
-- (CredentialProviderViewController *)getInitialViewController {
-    return self.rootViewController;
-}
-
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    SafeMetaData* safe = [self.safes objectAtIndex:indexPath.row];
-    
+    DatabasePreferences* safe = [self.safes objectAtIndex:indexPath.row];
+ 
     [self openDatabase:safe];
     
     [self.tableView deselectRowAtIndexPath:indexPath animated:YES];
 }
 
-- (void)openDatabase:(SafeMetaData*)safe {
-    BOOL useAutoFillCache = ![[self getInitialViewController] liveAutoFillIsPossibleWithSafe:safe];
-    
-    [OpenSafeSequenceHelper beginSequenceWithViewController:self
-                                                       safe:safe
-                                          openAutoFillCache:useAutoFillCache
-                                        canConvenienceEnrol:NO
-                                             isAutoFillOpen:YES
-                                     manualOpenOfflineCache:NO
-                                biometricAuthenticationDone:NO
-                                                 completion:^(Model * _Nullable model, NSError * _Nullable error) {
-                                                          if(model) {
-                                                              [self performSegueWithIdentifier:@"toPickCredentialsFromSafes" sender:model];
-                                                          }
-                                                          [self refreshSafes]; // Duress may have removed one
-                                                      }];
+- (IBAction)onCancel:(id)sender {
+
+        self.completion(YES, nil);
+
 }
 
-- (void)prepareForSegue:(UIStoryboardSegue *)segue sender:(id)sender {
-    if ([segue.identifier isEqualToString:@"toPickCredentialsFromSafes"]) {
-        PickCredentialsTableViewController *vc = segue.destinationViewController;
-        vc.model = (Model *)sender;
-        vc.rootViewController = self.rootViewController;
-    }
+- (void)openDatabase:(DatabasePreferences*)safe {
+
+        self.completion(NO, safe);
+
 }
 
 @end

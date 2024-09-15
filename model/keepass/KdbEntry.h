@@ -3,7 +3,7 @@
 //  Strongbox
 //
 //  Created by Mark on 08/11/2018.
-//  Copyright © 2018 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import <Foundation/Foundation.h>
@@ -26,7 +26,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property NSDate *expired;
 @property NSString *binaryFileName;
 @property NSData* binaryData;
-//@property NSData* extData;
+
 
 @property (readonly) BOOL isMetaEntry;
 

@@ -3,7 +3,7 @@
 //  Strongbox
 //
 //  Created by Mark on 08/04/2019.
-//  Copyright © 2019 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import "NSDictionary+Extensions.h"
@@ -33,13 +33,29 @@
     return ret;
 }
 
-//- (NSArray *)map:(id (^)(id obj, NSUInteger idx))block {
-//    NSMutableArray *result = [NSMutableArray arrayWithCapacity:[self count]];
-//    [self enumerateObjectsUsingBlock:^(id obj, NSUInteger idx, BOOL *stop) {
-//        [result addObject:block(obj, idx)];
-//    }];
-//    return [result copy];
-//}
+- (NSDictionary *)filter:(BOOL (^)(id _Nonnull, id _Nonnull))block {
+    NSMutableDictionary *ret = @{}.mutableCopy;
+    
+    NSArray *allKeys = [self allKeys];
+    for (id key in allKeys) {
+        id value = [self objectForKey:key];
+        BOOL go = block(key, value);
+        
+        if (go) {
+            ret[key] = value;
+        }
+    }
+    
+    return ret.copy;
+}
+
+
+
+
+
+
+
+
 
 
 @end

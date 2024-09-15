@@ -3,42 +3,50 @@
 //  Strongbox
 //
 //  Created by Mark on 18/10/2018.
-//  Copyright © 2018 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import "BaseXmlDomainObjectHandler.h"
-#import "GenericTextStringElementHandler.h"
 #import "V3BinariesList.h"
 #import "CustomIconList.h"
-#import "GenericTextIntegerElementHandler.h"
-#import "GenericTextBooleanElementHandler.h"
-#import "GenericTextUuidElementHandler.h"
-#import "GenericTextDateElementHandler.h"
+#import "CustomData.h"
+#import "MemoryProtection.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
 @interface Meta : BaseXmlDomainObjectHandler
-
+ 
 - (instancetype)initWithContext:(XmlProcessingContext*)context;
 - (instancetype)initWithDefaultsAndInstantiatedChildren:(XmlProcessingContext*)context;
 
-@property (nonatomic) GenericTextStringElementHandler *generator;
-@property (nonatomic, nullable) GenericTextStringElementHandler *headerHash;
-@property (nonatomic) V3BinariesList *v3binaries;
+@property (nonatomic, nullable) NSString* headerHash;
+@property NSDate* settingsChanged;
+@property (nonatomic) NSString *generator;
+@property (nonatomic) NSString *databaseName;
+@property NSDate* databaseNameChanged;
+@property (nonatomic) NSString *databaseDescription;
+@property NSDate* databaseDescriptionChanged;
+@property (nonatomic) NSString *defaultUserName;
+@property NSDate* defaultUserNameChanged;
+@property (nullable) NSNumber* maintenanceHistoryDays;
+@property (nonatomic) NSString *color;
+@property (nullable) NSDate*  masterKeyChanged;
+@property (nullable) NSNumber* masterKeyChangeRec;
+@property (nullable) NSNumber* masterKeyChangeForce;
+@property (nullable) NSNumber*  masterKeyChangeForceOnce;
+@property (nullable) MemoryProtection* memoryProtection;
 @property (nonatomic) CustomIconList *customIconList;
-
-@property (nonatomic) GenericTextIntegerElementHandler *historyMaxItems;
-@property (nonatomic) GenericTextIntegerElementHandler *historyMaxSize;
-
-// <RecycleBinEnabled>True</RecycleBinEnabled>
-// <RecycleBinUUID>AAAAAAAAAAAAAAAAAAAAAA==</RecycleBinUUID>
-// <RecycleBinChanged>2019-02-11T14:14:56Z</RecycleBinChanged>
-
-@property GenericTextBooleanElementHandler *recycleBinEnabled;
-@property GenericTextUuidElementHandler* recycleBinGroup;
-@property GenericTextDateElementHandler* recycleBinChanged;
-
-- (void)setHash:(NSString*)hash;
+@property BOOL recycleBinEnabled;
+@property NSUUID* recycleBinGroup;
+@property NSDate* recycleBinChanged;
+@property NSUUID* entryTemplatesGroup;
+@property NSDate* entryTemplatesGroupChanged;
+@property (nonatomic, nullable) NSNumber *historyMaxItems;
+@property (nonatomic, nullable) NSNumber *historyMaxSize;
+@property (nullable) NSUUID* lastSelectedGroup;
+@property (nullable) NSUUID*  lastTopVisibleGroup;
+@property (nonatomic) V3BinariesList *v3binaries;
+@property (nonatomic, nullable) CustomData* customData;
 
 @end
 

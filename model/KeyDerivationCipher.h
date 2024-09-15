@@ -3,7 +3,7 @@
 //  Strongbox
 //
 //  Created by Mark on 30/10/2018.
-//  Copyright © 2018 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import <Foundation/Foundation.h>
@@ -18,8 +18,10 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (NSData*)deriveKey:(NSData*)data;
 
+- (void)rotateHardwareKeyChallenge;
+
 @property (readonly, nonatomic) KdfParameters* kdfParameters;
-@property (readonly, nonatomic) NSData* transformSeed; // Used in conjunction with Yubikey as the challenge
+@property (readonly, nonatomic) NSData* transformSeed; 
 
 @end
 

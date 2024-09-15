@@ -1,20 +1,23 @@
 //
 //  SafesListTableViewController.h
-//  Strongbox Auto Fill
+//  Strongbox AutoFill
 //
 //  Created by Mark on 11/10/2018.
-//  Copyright © 2018 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import <UIKit/UIKit.h>
-#import <DZNEmptyDataSet/UIScrollView+EmptyDataSet.h>
 #import "CredentialProviderViewController.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
-@interface SafesListTableViewController : UITableViewController<DZNEmptyDataSetSource, DZNEmptyDataSetDelegate>
+typedef void (^SelectAutoFillDatabaseCompletion)(BOOL userCancelled, DatabasePreferences* _Nullable database);
 
-@property (nonatomic) CredentialProviderViewController *rootViewController;
+@interface SafesListTableViewController : UITableViewController
+
++ (UINavigationController*)navControllerfromStoryboard:(SelectAutoFillDatabaseCompletion)completion;
+
+@property (nonatomic, copy) SelectAutoFillDatabaseCompletion completion;
 
 @end
 

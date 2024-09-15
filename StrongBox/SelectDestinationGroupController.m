@@ -8,10 +8,20 @@
 
 #import "SelectDestinationGroupController.h"
 #import "Alerts.h"
+#import "Utils.h"
+#import "BrowseTableViewCellHelper.h"
+#import "AppPreferences.h"
 
-@implementation SelectDestinationGroupController {
-    NSArray<Node*> *_items;
-}
+@interface SelectDestinationGroupController ()
+
+@property (weak, nonatomic, nullable) IBOutlet UIBarButtonItem * buttonSelectThisDestination;
+@property NSArray<Node*> *items;
+@property BrowseTableViewCellHelper* cellHelper;
+@property (weak, nonatomic) IBOutlet UIBarButtonItem *buttonAddGroup;
+
+@end
+
+@implementation SelectDestinationGroupController
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
@@ -26,73 +36,68 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
     
+    self.navigationItem.title = NSLocalizedString(@"select_destination_group", @"Select Destination Group");
+    self.navigationItem.prompt = [self.viewModel.database getPathDisplayString:self.currentGroup includeRootGroup:YES rootGroupNameInsteadOfSlash:YES includeFolderEmoji:YES joinedBy:@" "];
+    
     self.tableView.tableFooterView = [UIView new];
+    
+    self.cellHelper = [[BrowseTableViewCellHelper alloc] initWithModel:self.viewModel tableView:self.tableView];
+    
+    if ( self.hideAddGroupButton ) {
+        [self.buttonAddGroup setEnabled:NO];
+        [self.buttonAddGroup setTintColor:[UIColor clearColor]];
+    }
+    
+    if ( self.customSelectDestinationButtonTitle.length ) {
+        [self.buttonSelectThisDestination setTitle:self.customSelectDestinationButtonTitle];
+    }
 }
-/////////////////////////////////////////////////////////////////////////////////////////////
+
+- (IBAction)onCancel:(id)sender {
+    [self.navigationController dismissViewControllerAnimated:YES completion:nil];
+}
 
 - (void)refresh {
-    _items = [self.currentGroup filterChildren:NO predicate:^BOOL(Node * _Nonnull node) {
-        return node.isGroup;
-    }];
-
-    self.buttonMove.enabled = [self moveOfItemsIsValid:self.currentGroup subgroupsValid:NO];
+    BrowseSortConfiguration* sortConfig = [self.viewModel getDefaultSortConfiguration];
+    
+    self.items = [self.viewModel sortItemsForBrowse:self.currentGroup.childGroups
+                                    browseSortField:sortConfig.field
+                                         descending:sortConfig.descending
+                                  foldersSeparately:sortConfig.foldersOnTop];
+        
+    self.buttonSelectThisDestination.enabled = [self isValidDestination:self.currentGroup validIfContainsAValidDestination:NO];
     
     [self.tableView reloadData];
 }
 
-- (BOOL)moveOfItemsIsValid:(Node*)group subgroupsValid:(BOOL)subgroupsValid  {
-    BOOL ret = YES;
-    for(Node* itemToMove in self.itemsToMove) {
-        if(![itemToMove validateChangeParent:group allowDuplicateGroupTitles:self.viewModel.database.format != kPasswordSafe]) {
-            ret = NO;
-            break;
-        }
+- (BOOL)isValidDestination:(Node*)group validIfContainsAValidDestination:(BOOL)validIfContainsAValidDestination  {
+    BOOL ret;
+    if ( self.validateDestination ) {
+        ret = self.validateDestination ( group );
     }
-    
-    if(ret) {
+    else {
+        slog(@"WARNWARN: No Validation block set...");
+        ret = NO;
+    }
+
+    if ( ret ) {
         return YES;
     }
-    else if(subgroupsValid) {
-        NSArray<Node*> *subgroups = [group filterChildren:NO predicate:^BOOL(Node * _Nonnull node) {
-            return group.isGroup;
-        }];
-        
-        for(Node* subgroup in subgroups) {
-            if([self moveOfItemsIsValid:subgroup subgroupsValid:YES]) {
+
+    if ( validIfContainsAValidDestination ) {
+        for ( Node* subgroup in group.childGroups ) {
+            if ( [self isValidDestination:subgroup validIfContainsAValidDestination:YES] ) {
                 return YES;
             }
         }
     }
-    
+
     return NO;
 }
 
-- (IBAction)onCancel:(id)sender {
-    [self.navigationController dismissViewControllerAnimated:YES completion:^{  }];
-}
-
-- (IBAction)onMoveHere:(id)sender {
-    for(Node* itemToMove in self.itemsToMove) {
-        if(![itemToMove changeParent:self.currentGroup allowDuplicateGroupTitles:self.viewModel.database.format != kPasswordSafe]) {
-            NSLog(@"Error Changing Parents.");
-            [Alerts warn:self
-                   title:NSLocalizedString(@"moveentry_vc_error_moving", @"Error Moving")
-                 message:NSLocalizedString(@"moveentry_vc_error_moving", @"Error Moving")
-              completion:^{
-                self.onDone();
-            }];
-            return;
-        }
-    }
-
-    [self.viewModel update:NO handler:^(NSError *error) {
-        if (error) {
-            [Alerts error:self
-                    title:NSLocalizedString(@"moveentry_vc_error_saving", @"Error Saving")
-                    error:error];
-        }
-
-        self.onDone();
+- (IBAction)onSelectThisGroupAsDestination:(id)sender {
+    [self dismissViewControllerAnimated:YES completion:^{
+        self.onSelectedDestination(self.currentGroup);
     }];
 }
 
@@ -114,49 +119,50 @@
                            }}];
 }
 
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#pragma mark - Table view data source
-
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return 1;
-}
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return _items.count;
+    return self.items.count;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    // Check to see whether the normal table or search results table is being displayed and set the Candy object from the appropriate array
+    Node* vm = self.items[indexPath.row];
+    BOOL validDestination = [self isValidDestination:vm validIfContainsAValidDestination:YES];
 
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"OpenSafeViewCell" forIndexPath:indexPath];
+    UITableViewCell* cell = [self.cellHelper getBrowseCellForNode:vm
+                                                        indexPath:indexPath
+                                                showLargeTotpCell:NO
+                                                showGroupLocation:NO
+                                            groupLocationOverride:nil
+                                                    accessoryType:validDestination ? UITableViewCellAccessoryDisclosureIndicator : UITableViewCellAccessoryNone
+                                                          noFlags:YES
+                                              showGroupChildCount:NO];
 
-    Node* vm = _items[indexPath.row];
-
-    cell.textLabel.text = vm.title;
-
-    BOOL validMove = [self moveOfItemsIsValid:vm subgroupsValid:YES];
-
-    cell.accessoryType = validMove ? UITableViewCellAccessoryDisclosureIndicator : UITableViewCellAccessoryNone;
-    cell.selectionStyle = validMove ? UITableViewCellSelectionStyleDefault : UITableViewCellSelectionStyleNone;
-    cell.userInteractionEnabled = validMove;
-    cell.contentView.alpha = validMove ? 1.0f : 0.5f;
-
-    cell.imageView.image = [UIImage imageNamed:@"folder"];
+    cell.selectionStyle = validDestination ? UITableViewCellSelectionStyleDefault : UITableViewCellSelectionStyleNone;
+    cell.userInteractionEnabled = validDestination;
+    cell.contentView.alpha = validDestination ? 1.0f : 0.5f;
 
     return cell;
 }
 
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    Node* vm = self.items[indexPath.row];
+
+    [self performSegueWithIdentifier:@"segueRecurse" sender:vm];
+}
+
 - (void)prepareForSegue:(UIStoryboardSegue *)segue sender:(id)sender {
     if ([segue.identifier isEqualToString:@"segueRecurse"]) {
-        Node *item = _items[self.tableView.indexPathForSelectedRow.row];
+        Node *item = (Node*)sender;
 
         SelectDestinationGroupController *vc = segue.destinationViewController;
 
         vc.currentGroup = item;
         vc.viewModel = self.viewModel;
-        vc.itemsToMove = self.itemsToMove;
-        vc.onDone = self.onDone;
+        vc.validateDestination = self.validateDestination;
+        vc.onSelectedDestination = self.onSelectedDestination;
+        vc.hideAddGroupButton = self.hideAddGroupButton;
+        vc.customSelectDestinationButtonTitle = self.customSelectDestinationButtonTitle;
     }
 }
 

@@ -3,11 +3,14 @@
 //  Strongbox
 //
 //  Created by Mark on 26/10/2018.
-//  Copyright © 2018 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import "ChaCha20Cipher.h"
 #import "sodium.h"
+#import "ChaCha20ReadStream.h"
+#import "ChaCha20OutputStream.h"
+#import "SBLog.h"
 
 static const uint32_t kIvSize = 12;
 static const uint32_t kKeySize = 32;
@@ -23,22 +26,22 @@ static const BOOL kLogVerbose = NO;
         int sodium_initialization = sodium_init();
         
         if (sodium_initialization == -1) {
-            NSLog(@"Sodium Initialization Failed.");
+            slog(@"Sodium Initialization Failed.");
             return nil;
         }
     }
     return self;
 }
 
-- (NSData*)decrypt:(NSData*)data iv:(NSData*)iv key:(NSData*)key {
+- (NSMutableData *)decrypt:(NSData *)data iv:(NSData *)iv key:(NSData *)key {
     if(kLogVerbose) {
-        NSLog(@"IV12: %@", [iv base64EncodedStringWithOptions:kNilOptions]);
-        NSLog(@"KEY32: %@", [key base64EncodedStringWithOptions:kNilOptions]);
-        NSLog(@"ChaCha Data In: %@", [data base64EncodedStringWithOptions:kNilOptions]);
+        slog(@"IV12: %@", [iv base64EncodedStringWithOptions:kNilOptions]);
+        slog(@"KEY32: %@", [key base64EncodedStringWithOptions:kNilOptions]);
+        slog(@"ChaCha Data In: %@", [data base64EncodedStringWithOptions:kNilOptions]);
     }
  
     if(iv.length != kIvSize || key.length != kKeySize) {
-        NSLog(@"IV or Key not of the expected length.");
+        slog(@"IV or Key not of the expected length.");
         return nil;
     }
     
@@ -49,7 +52,7 @@ static const BOOL kLogVerbose = NO;
     return foo;
 }
 
-- (NSData *)encrypt:(nonnull NSData *)data iv:(nonnull NSData *)iv key:(nonnull NSData *)key {
+- (NSMutableData *)encrypt:(NSData *)data iv:(NSData *)iv key:(NSData *)key {
     return [self decrypt:data iv:iv key:key];
 }
 
@@ -59,12 +62,19 @@ static const BOOL kLogVerbose = NO;
     
     if(SecRandomCopyBytes(kSecRandomDefault, kIvSize, newKey.mutableBytes))
     {
-        NSLog(@"Could not securely copy new bytes");
+        slog(@"Could not securely copy new bytes");
         return nil;
     }
     
     return newKey;
 }
 
+- (NSInputStream *)getDecryptionStreamForStream:(NSInputStream *)inputStream key:(NSData *)key iv:(NSData *)iv {
+    return [[ChaCha20ReadStream alloc] initWithStream:inputStream key:key iv:iv];
+}
+
+- (NSOutputStream *)getEncryptionOutputStreamForStream:(NSOutputStream *)outputStream key:(NSData *)key iv:(NSData *)iv {
+    return [[ChaCha20OutputStream alloc] initToOutputStream:outputStream key:key iv:iv];
+}
 
 @end

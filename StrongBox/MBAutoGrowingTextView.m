@@ -14,12 +14,13 @@
 @property (nonatomic, weak) NSLayoutConstraint *minHeightConstraint;
 @property (nonatomic, weak) NSLayoutConstraint *maxHeightConstraint;
 
+@property (nonatomic) BOOL layoutSubviewsCrashAvoidanceHack;
+
 @end
 
 @implementation MBAutoGrowingTextView
 
--(id)initWithFrame:(CGRect)frame
-{
+-(id)initWithFrame:(CGRect)frame {
     self = [super initWithFrame:frame];
     
     if (self) {
@@ -29,8 +30,7 @@
     return self;
 }
 
--(id) initWithCoder:(NSCoder *)aDecoder
-{
+-(id)initWithCoder:(NSCoder *)aDecoder {
     self = [super initWithCoder:aDecoder];
     if (self) {
         [self associateConstraints];
@@ -38,10 +38,9 @@
     return self;
 }
 
--(void)associateConstraints
-{
-    // iterate through all text view's constraints and identify
-    // height, max height and min height constraints.
+-(void)associateConstraints {
+    
+    
     
     for (NSLayoutConstraint *constraint in self.constraints) {
         if (constraint.firstAttribute == NSLayoutAttributeHeight) {
@@ -59,11 +58,18 @@
             }
         }
     }
-
 }
 
-- (void) layoutSubviews
-{
+- (void)layoutSubviews {
+    
+    
+    
+    
+    if(self.layoutSubviewsCrashAvoidanceHack){
+           return;
+    }
+    self.layoutSubviewsCrashAvoidanceHack = YES;
+    
     [super layoutSubviews];
     
     
@@ -71,22 +77,24 @@
              needs a Auto-layout environment to function. Make sure you are using Auto Layout and that UITextView is enclosed in\
              a view with valid auto-layout constraints.");
     
-    // calculate size needed for the text to be visible without scrolling
+    
     CGSize sizeThatFits = [self sizeThatFits:self.frame.size];
-    float newHeight = sizeThatFits.height;
+    float newHeight = sizeThatFits.height * 1.2; 
 
-    // if there is any minimal height constraint set, make sure we consider that
+    
     if (self.maxHeightConstraint) {
         newHeight = MIN(newHeight, self.maxHeightConstraint.constant);
     }
 
-    // if there is any maximal height constraint set, make sure we consider that
+    
     if (self.minHeightConstraint) {
         newHeight = MAX(newHeight, self.minHeightConstraint.constant);
     }
     
-    // update the height constraint
+    
     self.heightConstraint.constant = newHeight;
+    
+    self.layoutSubviewsCrashAvoidanceHack = NO;
 }
 
 @end

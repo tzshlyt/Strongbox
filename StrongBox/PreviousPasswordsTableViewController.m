@@ -3,10 +3,17 @@
 //  StrongBox
 //
 //  Created by Mark on 29/05/2017.
-//  Copyright © 2017 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import "PreviousPasswordsTableViewController.h"
+#import "ClipboardManager.h"
+
+#ifndef IS_APP_EXTENSION
+
+#import "ISMessages/ISMessages.h"
+
+#endif
 
 @interface PreviousPasswordsTableViewController ()
 
@@ -41,9 +48,32 @@
     NSString *dateString = [_dateFormatter stringFromDate:entry.timestamp];
 
     cell.textLabel.text = entry.password;
-    cell.detailTextLabel.text = dateString; //entry.password;
+    cell.detailTextLabel.text = dateString; 
 
     return cell;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    PasswordHistoryEntry *entry = (self.model.entries)[indexPath.row];
+
+    if (entry.password.length) {
+        [ClipboardManager.sharedInstance copyStringWithDefaultExpiration:entry.password];
+        
+        NSString* message = NSLocalizedString(@"item_details_password_copied", @"Password Copied");
+    
+#ifndef IS_APP_EXTENSION
+        [ISMessages showCardAlertWithTitle:message
+                                   message:nil
+                                  duration:3.f
+                               hideOnSwipe:YES
+                                 hideOnTap:YES
+                                 alertType:ISAlertTypeSuccess
+                             alertPosition:ISAlertPositionTop
+                                   didHide:nil];
+#endif
+    }
+    
+    [self.tableView deselectRowAtIndexPath:indexPath animated:YES];
 }
 
 @end

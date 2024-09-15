@@ -3,7 +3,7 @@
 //  Strongbox
 //
 //  Created by Mark on 20/09/2017.
-//  Copyright © 2017 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import "StrongboxUIDocument.h"
@@ -11,7 +11,13 @@
 @implementation StrongboxUIDocument
 
 -(instancetype)initWithFileURL:(NSURL *)url {
-    return [super initWithFileURL:url];
+    if (url && url.isFileURL) {
+        return [super initWithFileURL:url];
+    }
+    else {
+        slog(@"Invalid File URL: [%@]", url);
+        return nil;
+    }
 }
 
 - (instancetype)initWithData:(NSData*)data fileUrl:(NSURL*)fileUrl {
@@ -33,7 +39,7 @@
 }
 
 - (void)handleError:(NSError *)error userInteractionPermitted:(BOOL)userInteractionPermitted {
-    NSLog(@"UIDocument: error = %@", error);
+    slog(@"UIDocument: error = %@", error);
     [super handleError:error userInteractionPermitted:userInteractionPermitted];
 }
 

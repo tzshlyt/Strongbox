@@ -3,11 +3,18 @@
 //  MacBox
 //
 //  Created by Mark on 16/08/2017.
-//  Copyright © 2017 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import "Utils.h"
 #import <CommonCrypto/CommonCrypto.h>
+#import "NSData+Extensions.h"
+#import "NSString+Extensions.h"
+#import "NSArray+Extensions.h"
+
+#include <pwd.h>
+
+#import <CoreImage/CoreImage.h>
 
 #if TARGET_OS_IPHONE
 #import <MobileCoreServices/MobileCoreServices.h>
@@ -41,10 +48,22 @@ BOOL isValidUrl(NSString* urlString) {
     return error;
 }
 
-+ (NSString *)getAppVersion {
++ (NSString *)getAppBundleId {
     NSDictionary *info = [NSBundle mainBundle].infoDictionary;
     
+    NSString* bundleId = info[@"CFBundleIdentifier"];
+
+    return bundleId ? bundleId : @"";
+}
+
++ (NSString *)getAppVersion {
+    NSDictionary *info = [NSBundle mainBundle].infoDictionary;
     return [NSString stringWithFormat:@"%@", info[@"CFBundleShortVersionString"]];
+}
+
++ (NSString *)getAppBuildNumber {
+    NSDictionary *info = [NSBundle mainBundle].infoDictionary;
+    return info[@"CFBundleVersion"];
 }
 
 + (NSString *)getAppName {
@@ -68,6 +87,21 @@ BOOL isValidUrl(NSString* urlString) {
     return fn;
 }
 
++ (NSArray<NSString*>*)getTagsFromTagString:(NSString*)string {
+    NSArray<NSString*>* tags = [string componentsSeparatedByCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@";:,"]]; 
+    
+    NSArray<NSString*>* trimmed = [tags map:^id _Nonnull(NSString * _Nonnull obj, NSUInteger idx) {
+        return [Utils trim:obj];
+    }];
+    
+    NSArray<NSString*>* filtered = [trimmed filter:^BOOL(NSString * _Nonnull obj) {
+        return obj.length > 0;
+    }];
+
+    return filtered;
+}
+
+
 + (NSString *)hostname {
 #if TARGET_OS_IPHONE
     char baseHostName[256];
@@ -81,57 +115,34 @@ BOOL isValidUrl(NSString* urlString) {
     return [[NSHost currentHost] localizedName];
 #endif
 }
-//    char baseHostName[256];
-//    int success = gethostname(baseHostName, 255);
-//
-//    if (success != 0) return nil;
-//
-//    baseHostName[255] = '\0';
-//
-//    return [NSString stringWithFormat:@"%s.local", baseHostName];
-//}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 + (NSString*)getUsername {
     return NSFullUserName();
-}
-
-NSString* friendlyFileSizeString(long long byteCount) {
-    return [NSByteCountFormatter stringFromByteCount:byteCount countStyle:NSByteCountFormatterCountStyleFile];
-}
-
-NSString *friendlyDateString(NSDate *modDate) {
-    if(!modDate) { return @""; }
-    
-    NSDateFormatter *df = [[NSDateFormatter alloc] init];
-    df.timeStyle = NSDateFormatterShortStyle;
-    df.dateStyle = NSDateFormatterMediumStyle;
-    df.doesRelativeDateFormatting = YES;
-    df.locale = NSLocale.currentLocale;
-    
-    return [df stringFromDate:modDate];
-}
-
-NSString *friendlyDateStringVeryShort(NSDate *modDate) {
-    if(!modDate) { return @""; }
-    
-    NSDateFormatter *df = [[NSDateFormatter alloc] init];
-    df.timeStyle = NSDateFormatterShortStyle;
-    df.dateStyle = NSDateFormatterShortStyle;
-    df.doesRelativeDateFormatting = YES;
-    df.locale = NSLocale.currentLocale;
-    
-    return [df stringFromDate:modDate];
-}
-
-NSString *iso8601DateString(NSDate *modDate) {
-    if(!modDate) { return @""; }
-    
-    NSDateFormatter *dateFormatter = [[NSDateFormatter alloc] init];
-    NSLocale *enUSPOSIXLocale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
-    [dateFormatter setLocale:enUSPOSIXLocale];
-    [dateFormatter setDateFormat:@"yyyy-MM-dd'T'HH:mm:ssZZZZZ"];
-
-    return [dateFormatter stringFromDate:modDate];
 }
 
 + (NSString*)formatTimeInterval:(NSInteger)seconds {
@@ -141,29 +152,95 @@ NSString *iso8601DateString(NSDate *modDate) {
     
     NSDateComponentsFormatter* fmt =  [[NSDateComponentsFormatter alloc] init];
     
-    fmt.allowedUnits =  NSCalendarUnitMinute | NSCalendarUnitSecond;
+    fmt.allowedUnits =  NSCalendarUnitDay | NSCalendarUnitHour | NSCalendarUnitMinute | NSCalendarUnitSecond;
     fmt.unitsStyle = NSDateComponentsFormatterUnitsStyleShort;
     
     return [fmt stringFromTimeInterval:seconds];
 }
 
++ (NSString *)likelyFileExtensionForData:(NSData *)data {
+    uint8_t c;
+    [data getBytes:&c length:1];
+    
+    switch (c) {
+        case 0xFF:
+            
+            return @"jpeg";
+            break;
+        case 0x89:
+            
+            return @"png";
+            break;
+        case 0x47:
+            
+            return @"gif";
+            break;
+        case 0x49:
+        case 0x4D:
+            
+            return @"tiff";
+            break;
+        case 0x25:
+            
+            return @"pdf";
+            break;
+            
+            
+            
+            
+        case 0x46:
+            
+            return @"txt";
+            break;
+        default:
+            return @"txt";
+    }
+    return nil;
+}
+
+#if TARGET_OS_IPHONE && !IS_APP_EXTENSION
++ (void)openStrongboxSettingsAndPermissionsScreen {
+    NSString* settings = [NSString stringWithFormat:@"%@&path=LOCATION/%@", UIApplicationOpenSettingsURLString, NSBundle.mainBundle.bundleIdentifier];
+    NSURL* url = [NSURL URLWithString:settings];
+    [UIApplication.sharedApplication openURL:url options:@{} completionHandler:nil];
+}
+#endif
+
+NSString* friendlyFileSizeString(long long byteCount) {
+    return [NSByteCountFormatter stringFromByteCount:byteCount countStyle:NSByteCountFormatterCountStyleFile];
+}
+
+NSString* friendlyMemorySizeString(long long byteCount) {
+    return [NSByteCountFormatter stringFromByteCount:byteCount countStyle:NSByteCountFormatterCountStyleMemory];
+}
+
 NSString* keePassStringIdFromUuid(NSUUID* uuid) {
-    // 46C9B1FF-BD4A-BC4B-BB26-0C6190BAD20C => 46C9B1FFBD4ABC4BBB260C6190BAD20C
+    if (!uuid) {
+        return nil;
+    }
+    
     
     uuid_t uid;
     [uuid getUUIDBytes:(uint8_t*)&uid];
     
-    return [Utils hexadecimalString:[NSData dataWithBytes:uid length:sizeof(uuid_t)]];
+    return [NSData dataWithBytes:uid length:sizeof(uuid_t)].upperHexString;
 }
 
-NSUUID* uuidFromKeePassStringId(NSString* stringId) {
+NSUUID* uuidFromKeePassStringId(NSString* foo) {
+    if ( foo.length == 0 ) {
+        return nil;
+    }
+    
+    
+    
+    NSString* stringId = [[foo.trimmed stringByReplacingOccurrencesOfString:@"-" withString:@""] stringByReplacingOccurrencesOfString:@" " withString:@""];
     if(stringId.length != 32) {
         return nil;
     }
     
-    // 46C9B1FFBD4ABC4BBB260C6190BAD20C => 46C9B1FF-BD4A-BC4B-BB26-0C6190BAD20C;
     
-    NSData* uuidData = [Utils dataFromHexString:stringId];
+    
+    NSData* uuidData = stringId.dataFromHex;
     return [[NSUUID alloc] initWithUUIDBytes:uuidData.bytes];
 }
 
@@ -173,25 +250,6 @@ NSString* trim(NSString* str) {
 
 +(NSString *)trim:(NSString*)string {
     return trim(string);
-}
-
-NSString* xmlCleanupAndTrim(NSString* foo) {
-    // Some apps (KeeWeb) seem to prefix crap to the XML :( NSXMLParser is extremely strict about this, so if the XML
-    // Doesn't being with <?xml we do a quick search for it a small prefix at the start and start there instead if it's
-    // present
-    
-    static NSString* const kXmlPrefix = @"<?xml";
-    if(![foo hasPrefix:kXmlPrefix]) {
-        NSLog(@"WARNING: XML does not conform to XML Standard, does not being with \"<?xml\". Searching short initial prefix for this string for this prefix...");
-        
-        NSRange foundPrefix = [[foo substringWithRange:NSMakeRange(0, 16)] rangeOfString:kXmlPrefix];
-        if(foundPrefix.location != NSNotFound) {
-            NSLog(@"WARNING: Found prefix at %lu, starting from here instead...", (unsigned long)foundPrefix.location);
-            return [foo substringFromIndex:foundPrefix.location];
-        }
-    }
-    
-    return foo;
 }
 
 NSComparator finderStringComparator = ^(id obj1, id obj2)
@@ -204,9 +262,22 @@ NSComparator finderStringComparator = ^(id obj1, id obj2)
     return finderStringCompare(string1, string2);
 }
 
+#if TARGET_OS_IPHONE
++ (BOOL)isiPadPro {
+    
+
+    return (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) && MAX(UIScreen.mainScreen.bounds.size.width, UIScreen.mainScreen.bounds.size.height) > 1024;
+}
+
++ (BOOL)isiPad {
+    return (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad);
+}
+
+#endif
+
 NSComparisonResult finderStringCompare(NSString* string1, NSString* string2) {
-    // Finder Like String Sort
-    // https://developer.apple.com/library/content/documentation/Cocoa/Conceptual/Strings/Articles/SearchingStrings.html#//apple_ref/doc/uid/20000149-SW1
+    
+    
     
     static NSStringCompareOptions comparisonOptions =
     NSCaseInsensitiveSearch | NSNumericSearch |
@@ -286,7 +357,7 @@ uint16_t littleEndian2BytesToUInt16(uint8_t *bytes) {
 
 int64_t littleEndianNBytesToInt64(uint8_t* bytes, int n)  {
     if(n > 8) {
-        NSLog(@"n > 8 passed to littleEndianNBytesToInt64");
+        slog(@"n > 8 passed to littleEndianNBytesToInt64");
         return -1;
     }
     
@@ -320,7 +391,7 @@ NSData* IntToLittleEndianData(int64_t integer, uint8_t byteCount) {
     return ret;
 }
 
-///////////////////////////////////////////////////////////////////////////////////////////////////
+
 
 void hexdump(unsigned char *buffer, unsigned long index, unsigned long width) {
     unsigned long i;
@@ -343,65 +414,17 @@ void hexdump(unsigned char *buffer, unsigned long index, unsigned long width) {
     printf("\n");
 }
 
-+ (NSString *)hexadecimalString:(NSData *)data {
-    const unsigned char *dataBuffer = (const unsigned char *)data.bytes;
-    
-    if (!dataBuffer) {
-        return [NSString string];
-    }
-    
-    NSUInteger dataLength = data.length;
-    NSMutableString *hexString = [NSMutableString stringWithCapacity:(dataLength * 2)];
-    
-    for (int i = 0; i < dataLength; ++i) {
-        [hexString appendString:[NSString stringWithFormat:@"%02lX", (unsigned long)dataBuffer[i]]];
-    }
-    
-    return [NSString stringWithString:hexString];
-}
-
-+ (NSData *)dataFromHexString:(NSString*)string {
-    // Remove any and all spaces
-    string = [string stringByReplacingOccurrencesOfString:@" " withString:@""];
-    
-    const char *chars = [string UTF8String];
-    NSUInteger i = 0, len = string.length;
-    
-    NSMutableData *data = [NSMutableData dataWithCapacity:len / 2];
-    char byteChars[3] = {'\0','\0','\0'};
-    unsigned long wholeByte;
-    
-    while (i < len) {
-        byteChars[0] = chars[i++];
-        byteChars[1] = chars[i++];
-        wholeByte = strtoul(byteChars, NULL, 16);
-        [data appendBytes:&wholeByte length:1];
-    }
-    
-    return data;
-}
-
-NSData* sha256(NSData *data) {
-    uint8_t digest[CC_SHA256_DIGEST_LENGTH] = { 0 };
-    
-    CC_SHA256(data.bytes, (CC_LONG)data.length, digest);
-    
-    NSData *out = [NSData dataWithBytes:digest length:CC_SHA256_DIGEST_LENGTH];
-    
-    return out;
-}
-
 NSData* hmacSha1(NSData* data, NSData* key) {
     unsigned char cHMAC[CC_SHA1_DIGEST_LENGTH];
     CCHmac(kCCHmacAlgSHA1, key.bytes, key.length, data.bytes, data.length, cHMAC);
     return [[NSData alloc] initWithBytes:cHMAC length:CC_SHA1_DIGEST_LENGTH];
 }
 
-uint32_t getRandomUint32() {
+uint32_t getRandomUint32(void) {
     uint32_t ret;
     if(SecRandomCopyBytes(kSecRandomDefault, sizeof(uint32_t), &ret))
     {
-        NSLog(@"Could not securely copy new random bytes");
+        slog(@"Could not securely copy new random bytes");
         return -1;
     }
     
@@ -412,7 +435,7 @@ NSData* getRandomData(uint32_t length) {
     NSMutableData *start = [NSMutableData dataWithLength:length];
     if(SecRandomCopyBytes(kSecRandomDefault, length, start.mutableBytes))
     {
-        NSLog(@"Could not securely copy new random bytes");
+        slog(@"Could not securely copy new random bytes");
         return nil;
     }
     
@@ -420,11 +443,11 @@ NSData* getRandomData(uint32_t length) {
 }
 
 #if TARGET_OS_IPHONE
-UIImage* scaleImage(UIImage* image, CGSize newSize)
-{
+
+UIImage* scaleImage(UIImage* image, CGSize newSize) {
     float heightToWidthRatio = image.size.height / image.size.width;
     float scaleFactor = 1;
-    if(heightToWidthRatio > 0) {
+    if(heightToWidthRatio > 1) {
         scaleFactor = newSize.height / image.size.height;
     } else {
         scaleFactor = newSize.width / image.size.width;
@@ -434,7 +457,7 @@ UIImage* scaleImage(UIImage* image, CGSize newSize)
     newSize2.width = image.size.width * scaleFactor;
     newSize2.height = image.size.height * scaleFactor;
     
-    @autoreleasepool { // Prevent App Extension Crash
+    @autoreleasepool { 
         UIGraphicsBeginImageContext(newSize2);
         [image drawInRect:CGRectMake(0,0,newSize2.width,newSize2.height)];
         UIImage* newImage = UIGraphicsGetImageFromCurrentImageContext();
@@ -443,57 +466,103 @@ UIImage* scaleImage(UIImage* image, CGSize newSize)
         return newImage;
     }
 }
+
++ (UIImage *)makeRoundedImage:(UIImage*)image radius:(float)radius {
+    CALayer *imageLayer = [CALayer layer];
+    imageLayer.frame = CGRectMake(0, 0, image.size.width, image.size.height);
+    imageLayer.contents = (id) image.CGImage;
+
+    imageLayer.masksToBounds = YES;
+    imageLayer.cornerRadius = radius;
+
+    UIGraphicsBeginImageContext(image.size);
+    [imageLayer renderInContext:UIGraphicsGetCurrentContext()];
+    UIImage *roundedImage = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+
+    return roundedImage;
+}
+
 #else
-NSImage* scaleImage(NSImage* image, CGSize newSize)
-{
-    float heightToWidthRatio = image.size.height / image.size.width;
-    float scaleFactor = 1;
-    if(heightToWidthRatio > 0) {
-        scaleFactor = newSize.height / image.size.height;
-    } else {
-        scaleFactor = newSize.width / image.size.width;
+
+NSColor* NSColorFromRGB(NSUInteger rgbValue) {
+    return [NSColor colorWithCalibratedRed:((float)((rgbValue & 0xFF0000) >> 16))/255.0 green:((float)((rgbValue & 0xFF00) >> 8))/255.0 blue:((float)(rgbValue & 0xFF))/255.0 alpha:1.0];
+}
+
++ (NSImage *)imageTintedWithColor:(NSImage*)img tint:(NSColor *)tint {
+    NSImage *image = [img copy];
+    if (tint) {
+        [image lockFocus];
+        [tint set];
+        NSRect imageRect = {NSZeroPoint, [image size]};
+        NSRectFillUsingOperation(imageRect, NSCompositingOperationSourceAtop);
+        [image unlockFocus];
+    }
+    return image;
+}
+
+NSImage* scaleImage(NSImage* image, CGSize newSize) {
+    @try {
+        if (!image || !image.isValid) {
+            return image;
+        }
+        
+        float heightToWidthRatio = image.size.height / image.size.width;
+        float scaleFactor = 1;
+        if(heightToWidthRatio > 1) {
+            scaleFactor = newSize.height / image.size.height;
+        } else {
+            scaleFactor = newSize.width / image.size.width;
+        }
+        
+        CGSize newSize2 = newSize;
+        newSize2.width = image.size.width * scaleFactor;
+        newSize2.height = image.size.height * scaleFactor;
+
+        @autoreleasepool { 
+            NSImage *ret = [[NSImage alloc] initWithSize:newSize2];
+            if (!ret || !ret.isValid) {
+                return image;
+            }
+            [ret lockFocus];
+            
+            NSRect thumbnailRect = { 0 };
+            
+            thumbnailRect.size.width = newSize2.width;
+            thumbnailRect.size.height = newSize2.height;
+            
+            [image drawInRect:thumbnailRect
+                     fromRect:NSZeroRect
+                    operation:NSCompositingOperationSourceOver
+                     fraction:1.0];
+            
+            [ret unlockFocus];
+            
+            return ret;
+        }
+    } @catch (NSException *exception) {
+        slog(@"Exception in scaleImage: [%@]", exception);
+        return image;
+    } @finally { }
+}
+
++ (void)dismissViewControllerCorrectly:(NSViewController*)vc {
+    if ( !vc ) {
+        slog(@"🔴 nil viewController passed to dismissViewControllerCorrectly");
+        return;
     }
     
-    CGSize newSize2 = newSize;
-    newSize2.width = image.size.width * scaleFactor;
-    newSize2.height = image.size.height * scaleFactor;
-
-    NSImage *ret = [[NSImage alloc] initWithSize:newSize2];
-    
-    [ret lockFocus];
-    
-    NSRect thumbnailRect = { 0 };
-    //thumbnailRect.origin = thumbnailPoint;
-    thumbnailRect.size.width = newSize2.width;
-    thumbnailRect.size.height = newSize2.height;
-    
-    [image drawInRect:thumbnailRect
-             fromRect:NSZeroRect
-            operation:NSCompositeSourceOver
-             fraction:1.0];
-    
-    [ret unlockFocus];
-    
-//    CGContextRef contextRef =  CGBitmapContextCreate(0, newSize2.width, newSize2.height, 8, newSize2.width*4, [NSColorSpace genericRGBColorSpace].CGColorSpace, kCGImageAlphaPremultipliedFirst);
-//
-//    [image drawInRect:CGRectMake(0,0,newSize2.width, newSize2.height)];
-//
-//    CGImageRef imageRef = CGBitmapContextCreateImage(contextRef);
-//    NSImage* ret = [[NSImage alloc] initWithCGImage:imageRef size:NSMakeSize(newSize2.width, newSize2.height)];
-//    CFRelease(imageRef);
-//    CFRelease(contextRef);
-    
-    return ret;
-    
-    //@autoreleasepool { // Prevent App Extension Crash
-
-        //[image drawInRect:CGRectMake(0,0,newSize2.width,newSize2.height)];
-        //UIImage* newImage = UIGraphicsGetImageFromCurrentImageContext();
-       // UIGraphicsEndImageContext();
-        
-        //return newImage;
-    //}
+    if ( vc.presentingViewController ) {
+        [vc.presentingViewController dismissViewController:vc];
+    }
+    else if ( vc.view.window.sheetParent ) {
+        [vc.view.window.sheetParent endSheet:vc.view.window returnCode:NSModalResponseCancel];
+    }
+    else {
+        [vc.view.window close];
+    }
 }
+
 #endif
 
 #if TARGET_OS_IPHONE
@@ -504,21 +573,8 @@ NSImage* scaleImage(NSImage* image, CGSize newSize)
     NSURL *url;
     NSData* data;
     
-    if(isImage) {
-        if (@available(iOS 11.0, *)) {
-            url =  [info objectForKey:UIImagePickerControllerImageURL];
-        } else {
-            UIImage* image = [info objectForKey:UIImagePickerControllerOriginalImage];
-            
-            if(!image) {
-                if(error) {
-                    *error = [Utils createNSError:@"Could not read the data for this item" errorCode:-1];
-                }
-                return nil;
-            }
-            
-            data = UIImagePNGRepresentation(image);
-        }
+    if ( isImage ) {
+        url =  [info objectForKey:UIImagePickerControllerImageURL];
     }
     else {
         url =  [info objectForKey:UIImagePickerControllerMediaURL];
@@ -531,28 +587,189 @@ NSImage* scaleImage(NSImage* image, CGSize newSize)
     return data;
 }
 
++ (UIImage *)getQrCode:(NSString *)string pointSize:(NSUInteger)pointSize {
+    CIImage* qrCode = [self getQrCodeCIImage:string pointSize:pointSize];
+
+    return [UIImage imageWithCIImage:qrCode
+                               scale:[UIScreen mainScreen].scale
+                         orientation:UIImageOrientationUp];
+}
+
+#else
+
++ (NSImage*)getQrCode:(NSString*)string pointSize:(NSUInteger)pointSize {
+    CIImage* qrCode = [self getQrCodeCIImage:string pointSize:pointSize];
+
+    NSCIImageRep *rep = [NSCIImageRep imageRepWithCIImage:qrCode];
+    NSImage *nsImage = [[NSImage alloc] initWithSize:rep.size];
+
+    [nsImage addRepresentation:rep];
+
+    return nsImage;
+}
+
 #endif
+
++ (CIImage *)getQrCodeCIImage:(NSString *)qrString pointSize:(NSUInteger)pointSize {
+    CIImage *input = [self createQRForString:qrString];
+
+    
+#if TARGET_OS_IPHONE
+    NSUInteger kImageViewSize = pointSize * UIScreen.mainScreen.scale;
+#else
+    NSUInteger kImageViewSize = pointSize * 2;
+#endif
+    
+    CGFloat scale = kImageViewSize / input.extent.size.width;
+
+    CGAffineTransform transform = CGAffineTransformMakeScale(scale, scale);
+    CIImage *qrCode = [input imageByApplyingTransform:transform];
+    
+    return qrCode;
+}
+
++ (CIImage *)createQRForString:(NSString *)qrString {
+    NSData *stringData = [qrString dataUsingEncoding:NSISOLatin1StringEncoding];
+
+    CIFilter *qrFilter = [CIFilter filterWithName:@"CIQRCodeGenerator"];
+    
+    
+    
+    [qrFilter setValue:stringData forKey:@"inputMessage"];
+    [qrFilter setValue:@"H" forKey:@"inputCorrectionLevel"];
+    
+    return qrFilter.outputImage;
+}
 
 NSString* localizedYesOrNoFromBool(BOOL george) {
     return george ?
     NSLocalizedString(@"alerts_yes", @"Yes") :
-    NSLocalizedString(@"alerts_no", @"No"); // TODO: change to use generic_yes and generic_no?
+    NSLocalizedString(@"alerts_no", @"No");
 }
 
-//    [[Settings sharedInstance] setPro:NO];
-//    [[Settings sharedInstance] setEndFreeTrialDate:nil];
-//    [[Settings sharedInstance] setHavePromptedAboutFreeTrial:NO];
-//    [[Settings sharedInstance] resetLaunchCount];
-//    NSCalendar *cal = [NSCalendar currentCalendar];
-//    NSDate *date = [cal dateByAddingUnit:NSCalendarUnitDay value:9 toDate:[NSDate date] options:0];
-//    [[Settings sharedInstance] setEndFreeTrialDate:date];
+NSString* localizedOnOrOffFromBool(BOOL george) {
+    return george ?
+    NSLocalizedString(@"generic_state_on", @"On") :
+    NSLocalizedString(@"generic_state_off", @"Off");
+}
+
+#if TARGET_OS_IPHONE
+
+#ifndef IS_APP_EXTENSION
++ (BOOL)isAppInForeground {
+    UIApplicationState state = UIApplication.sharedApplication.applicationState;
+    return state == UIApplicationStateActive;
+
+}
+#endif
+
+#else
+BOOL checkForScreenRecordingPermissionsOnMac(void) {
+    
+    BOOL canRecordScreen = NO;
+    NSRunningApplication *runningApplication = NSRunningApplication.currentApplication;
+    NSNumber *ourProcessIdentifier = [NSNumber numberWithInteger:runningApplication.processIdentifier];
+    
+    CFArrayRef windowList = CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly, kCGNullWindowID);
+    NSUInteger numberOfWindows = CFArrayGetCount(windowList);
+    
+    for (int index = 0; index < numberOfWindows; index++) {
+        
+        NSDictionary *windowInfo = (NSDictionary *)CFArrayGetValueAtIndex(windowList, index);
+        NSString *windowName = windowInfo[(id)kCGWindowName];
+        NSNumber *processIdentifier = windowInfo[(id)kCGWindowOwnerPID];
+        
+        
+        if (! [processIdentifier isEqual:ourProcessIdentifier]) {
+            
+            pid_t pid = processIdentifier.intValue;
+            NSRunningApplication *windowRunningApplication = [NSRunningApplication runningApplicationWithProcessIdentifier:pid];
+            
+            if (! windowRunningApplication) {
+                
+            }
+            else {
+                NSString *windowExecutableName = windowRunningApplication.executableURL.lastPathComponent;
+                
+                if (windowName) {
+                    if ([windowExecutableName isEqual:@"Dock"]) {
+                        
+                    }
+                    else {
+                        canRecordScreen = YES;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    CFRelease(windowList);
+    
+    return canRecordScreen;
+}
+
+#endif
 
 
-//    [[Settings sharedInstance] setFullVersion:NO];
-//[[Settings sharedInstance] setEndFreeTrialDate:nil];
-//    NSCalendar *cal = [NSCalendar currentCalendar];
-//    NSDate *date = [cal dateByAddingUnit:NSCalendarUnitDay value:-10 toDate:[NSDate date] options:0];
-//    [[Settings sharedInstance] setEndFreeTrialDate:date];
-//
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
++ (NSURL*)userHomeDirectoryEvenInSandbox {
+    const char *home = getpwuid(getuid())->pw_dir;
+    
+    NSString *path = [[NSFileManager defaultManager]
+                      stringWithFileSystemRepresentation:home
+                      length:strlen(home)];
+
+    NSURL *url = [NSURL fileURLWithPath:path isDirectory:YES];
+    
+    return url;
+}
 
 @end

@@ -3,13 +3,16 @@
 //  test-new-ui
 //
 //  Created by Mark on 23/04/2019.
-//  Copyright © 2019 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import "CustomFieldEditorViewController.h"
 #import "Utils.h"
-#import "Entry.h"
+#import "Constants.h"
 #import "NSArray+Extensions.h"
+#import "PasswordMaker.h"
+#import "Alerts.h"
+#import "AppPreferences.h"
 
 @interface CustomFieldEditorViewController () <UITextFieldDelegate, UITextViewDelegate>
 
@@ -21,6 +24,7 @@
 @property (weak, nonatomic) IBOutlet UISwitch *switchProtected;
 @property (weak, nonatomic) IBOutlet UIBarButtonItem *buttonDone;
 @property (weak, nonatomic) IBOutlet UILabel *labelError;
+@property (weak, nonatomic) IBOutlet UIButton *buttonGenerate;
 
 @end
 
@@ -30,7 +34,7 @@ const static NSSet<NSString*> *keePassReservedNames;
 
 + (void)initialize {
     if(self == [CustomFieldEditorViewController class]) {
-        keePassReservedNames = [NSSet setWithArray:[[[Entry reservedCustomFieldKeys] allObjects] map:^id _Nonnull(NSString * _Nonnull obj, NSUInteger idx) {
+        keePassReservedNames = [NSSet setWithArray:[[Constants.ReservedCustomFieldKeys allObjects] map:^id _Nonnull(NSString * _Nonnull obj, NSUInteger idx) {
             return obj.lowercaseString;
         }]];
     }
@@ -52,9 +56,7 @@ const static NSSet<NSString*> *keePassReservedNames;
                           action:@selector(textFieldDidChange:)
                 forControlEvents:UIControlEventEditingChanged];
     
-    UIColor *borderColor = [UIColor colorWithRed:204.0/255.0 green:204.0/255.0 blue:204.0/255.0 alpha:1.0];
-    
-    self.textView.layer.borderColor = borderColor.CGColor;
+    self.textView.layer.borderColor = UIColor.labelColor.CGColor;
     self.textView.layer.borderWidth = 0.5f;
     self.textView.layer.cornerRadius = 5.0f;
 
@@ -67,6 +69,13 @@ const static NSSet<NSString*> *keePassReservedNames;
     self.keyTextField.accessibilityLabel = NSLocalizedString(@"custom_field_vc_accessibility_label_name", @"Custom Field Name");
     self.textView.accessibilityLabel = NSLocalizedString(@"custom_field_vc_accessibility_label_value", @"Custom Field Value");
     self.switchProtected.accessibilityLabel = NSLocalizedString(@"custom_field_vc_accessibility_label_protected", @"Custom Field Protected");
+
+    
+    
+    [self.buttonGenerate setImage:[UIImage systemImageNamed:@"arrow.triangle.2.circlepath"] forState:UIControlStateNormal];
+
+    [self.buttonGenerate setPreferredSymbolConfiguration:[UIImageSymbolConfiguration configurationWithScale:UIImageSymbolScaleLarge]
+                                                   forImageInState:UIControlStateNormal];
     
     [self.keyTextField becomeFirstResponder];
     
@@ -104,8 +113,8 @@ const static NSSet<NSString*> *keePassReservedNames;
     }
     
     if(keyIsValid) {
-        if(self.customField) { // Existing Custom Field
-            if(![candidate isEqualToString:self.customField.key]) { // Custom Field and they've changed the key
+        if(self.customField) { 
+            if([candidate compare:self.customField.key] != NSOrderedSame) { 
                 NSMutableSet<NSString*> *otherKeys = [self.customFieldsKeySet mutableCopy];
                 [otherKeys removeObject:self.customField.key];
                 
@@ -122,7 +131,7 @@ const static NSSet<NSString*> *keePassReservedNames;
     }
     
     if(!keyIsValid) {
-        self.keyTextField.layer.borderColor = UIColor.redColor.CGColor;
+        self.keyTextField.layer.borderColor = UIColor.systemRedColor.CGColor;
         self.keyTextField.layer.borderWidth = 0.5f;
         self.keyTextField.layer.cornerRadius = 5.0f;
         self.buttonDone.enabled = NO;
@@ -130,8 +139,9 @@ const static NSSet<NSString*> *keePassReservedNames;
         self.labelError.hidden = NO;
     }
     else {
-        self.keyTextField.layer.borderColor = UIColor.redColor.CGColor;
-        self.keyTextField.layer.borderWidth = 0.0;
+        self.keyTextField.layer.borderColor = UIColor.labelColor.CGColor;
+        self.keyTextField.layer.borderWidth = 0.5;
+    
         self.keyTextField.layer.cornerRadius = 5.0f;
         self.buttonDone.enabled = YES;
         self.labelError.text = @"";
@@ -148,8 +158,8 @@ const static NSSet<NSString*> *keePassReservedNames;
     self.scrollView.contentInset = contentInsets;
     self.scrollView.scrollIndicatorInsets = contentInsets;
     
-    // If active text field is hidden by keyboard, scroll it so it's visible
-    // Your app might not need or want this behavior.
+    
+    
     
     CGRect aRect = self.view.frame;
     
@@ -170,31 +180,55 @@ const static NSSet<NSString*> *keePassReservedNames;
 
 - (void)textFieldDidBeginEditing:(UITextField *)textField
 {
-    NSLog(@"textFieldDidBeginEditing");
+    
     self.activeField = textField;
 }
 
 - (void)textFieldDidEndEditing:(UITextField *)textField
 {
-    NSLog(@"textFieldDidEndEditing");
+
     self.activeField = nil;
 }
 
 - (void)textViewDidBeginEditing:(UITextView *)textView {
-    NSLog(@"textViewDidBeginEditing");
+
     self.activeField = textView;
 }
 
 - (void)textViewDidEndEditing:(UITextView *)textView {
-    NSLog(@"textViewDidEndEditing");
+
     self.activeField = nil;
 }
 
-////////////////////////////////////////////////////////////////////////
+
 
 - (IBAction)onDone:(id)sender {
-    NSString* key = trim(self.keyTextField.text);
     NSString* value = [NSString stringWithString:self.textView.textStorage.string];
+    
+    if ( ![trim(value) isEqualToString:value] ) {
+        __weak CustomFieldEditorViewController* weakSelf = self;
+        
+        [Alerts twoOptionsWithCancel:self
+                               title:NSLocalizedString(@"field_tidy_title_tidy_up_field", @"Tidy Up Field?")
+                             message:NSLocalizedString(@"field_tidy_message_tidy_up_field", @"There are some blank characters (e.g. spaces, tabs) at the start or end of this field.\n\nShould Strongbox tidy up these extraneous characters?")
+                   defaultButtonText:NSLocalizedString(@"field_tidy_choice_tidy_up_field", @"Tidy Up")
+                    secondButtonText:NSLocalizedString(@"field_tidy_choice_dont_tidy", @"Don't Tidy")
+                              action:^(int response) {
+            if ( response == 0 ) {
+                [weakSelf postValidationSetAndDismiss:trim(value)];
+            }
+            else if ( response == 1) {
+                [weakSelf postValidationSetAndDismiss:value];
+            }
+        }];
+    }
+    else {
+        [self postValidationSetAndDismiss:value];
+    }
+}
+
+- (void)postValidationSetAndDismiss:(NSString*)value {
+    NSString* key = trim(self.keyTextField.text);
     BOOL protected = self.switchProtected.on;
 
     if(self.onDone) {
@@ -210,6 +244,14 @@ const static NSSet<NSString*> *keePassReservedNames;
 
 - (void)textFieldDidChange:(id)sender {
     [self validateUi];
+}
+
+- (IBAction)onGenerate:(id)sender {
+    [PasswordMaker.sharedInstance promptWithSuggestions:self
+                                                 config:AppPreferences.sharedInstance.passwordGenerationConfig
+                                                 action:^(NSString * _Nonnull response) {
+        self.textView.text = response;
+    }];
 }
 
 @end

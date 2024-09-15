@@ -7,10 +7,19 @@
 //
 
 #import <UIKit/UIKit.h>
-#import <DZNEmptyDataSet/UIScrollView+EmptyDataSet.h>
+
+NS_ASSUME_NONNULL_BEGIN
 
 @interface SafesViewController : UITableViewController
 
 - (void)enqueueImport:(NSURL *)url canOpenInPlace:(BOOL)canOpenInPlace;
+- (void)onAppLockScreenWillBeDismissed:(void (^ __nullable)(void))completion;
+- (void)onAppLockScreenWasDismissed:(BOOL)userJustCompletedBiometricAuthentication;
+- (void)performActionForShortcutItem:(UIApplicationShortcutItem *)shortcutItem;
+- (void)handleOtpAuthUrl:(NSURL*)url;
+
+
 
 @end
+
+NS_ASSUME_NONNULL_END

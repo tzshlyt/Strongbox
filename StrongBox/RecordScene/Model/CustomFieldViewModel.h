@@ -3,7 +3,7 @@
 //  test-new-ui
 //
 //  Created by Mark on 23/04/2019.
-//  Copyright © 2019 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import <Foundation/Foundation.h>
@@ -16,9 +16,11 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (BOOL)isDifferentFrom:(CustomFieldViewModel*)other;
 
-@property NSString* key;
-@property NSString* value;
-@property BOOL protected;
+
+
+@property (readonly) NSString* key;
+@property (readonly) NSString* value;
+@property (readonly) BOOL protected;
 @property BOOL concealedInUI;
 
 @end

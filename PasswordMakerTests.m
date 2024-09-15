@@ -3,12 +3,12 @@
 //  StrongboxTests
 //
 //  Created by Mark on 29/06/2019.
-//  Copyright © 2019 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import <XCTest/XCTest.h>
 #import "PasswordMaker.h"
-
+#import "SBLog.h"
 @interface PasswordMakerTests : XCTestCase
 
 @end
@@ -18,7 +18,7 @@
 - (void)testDefaults {
     NSString* password = [PasswordMaker.sharedInstance generateForConfig:[PasswordGenerationConfig defaults]];
     
-    NSLog(@"Generated: [%@]", password);
+    slog(@"Generated: [%@]", password);
     
     XCTAssertNotNil(password);
 }
@@ -33,7 +33,7 @@
 
     NSString* password = [PasswordMaker.sharedInstance generateForConfig:config];
     
-    NSLog(@"Generated: [%@]", password);
+    slog(@"Generated: [%@]", password);
     
     XCTAssertNotNil(password);
 }
@@ -45,20 +45,20 @@
     
     NSString* password = [PasswordMaker.sharedInstance generateForConfig:config];
     
-    NSLog(@"Generated: [%@]", password);
+    slog(@"Generated: [%@]", password);
     
     XCTAssertNotNil(password);
 }
 
-//- (void)testEmojis {
-//    PasswordGenerationConfig* config = [PasswordGenerationConfig defaults];
-//    
-//    config.useCharacterGroups = @[@(kPasswordGenerationCharacterPoolEmoji)];
-//    NSString* password = [PasswordMaker.sharedInstance generateForConfig:config];
-//    
-//    NSLog(@"Generated: [%@]", password);
-//    
-//    XCTAssertNotNil(password);
-//}
+
+
+
+
+
+
+
+
+
+
 
 @end

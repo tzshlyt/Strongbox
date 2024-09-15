@@ -3,17 +3,18 @@
 //  Strongbox
 //
 //  Created by Mark on 20/09/2017.
-//  Copyright © 2017 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import "AppleICloudProvider.h"
 #import "StrongboxUIDocument.h"
 #import "Strongbox.h"
 #import "Utils.h"
-#import "SafesList.h"
-#import "Settings.h"
+#import "DatabasePreferences.h"
 #import "iCloudSafesCoordinator.h"
-#import "SVProgressHUD/SVProgressHUD.h"
+#import "SVProgressHUD.h"
+#import "NSDate+Extensions.h"
+#import "StrongboxErrorCodes.h"
 
 @implementation AppleICloudProvider
 
@@ -31,25 +32,18 @@
 - (instancetype)init {
     if (self = [super init]) {
         _storageId = kiCloud;
-        _allowOfflineCache = YES;
         _providesIcons = NO;
         _browsableNew = NO;
         _browsableExisting = NO;
         _rootFolderOnly = NO;
+        _defaultForImmediatelyOfferOfflineCache = NO; 
+        _supportsConcurrentRequests = NO; 
         
         return self;
     }
     else {
         return nil;
     }
-}
-
-- (NSString *)displayName {
-    return @"iCloud";
-}
-
-- (NSString *)icon {
-    return @"icloud-32";
 }
 
 - (NSURL*)getFullICloudURLWithFileName:(NSString *)filename {
@@ -60,159 +54,171 @@
     return [[iCloudSafesCoordinator sharedInstance] getUniqueICloudFilename:prefix extension:extension];
 }
 
-- (void)    create:(NSString *)nickName
-         extension:(NSString *)extension
-              data:(NSData *)data
-      parentFolder:(NSObject *)parentFolder
-    viewController:(UIViewController *)viewController
-        completion:(void (^)(SafeMetaData *metadata, NSError *error))completion {
-    [self create:nickName
-       extension:extension
-            data:data
-suggestedFilename:nil
-    parentFolder:parentFolder
-  viewController:viewController
-      completion:completion];
-}
-
-- (void)    create:(NSString *)nickName
-         extension:(NSString *)extension
-              data:(NSData *)data
- suggestedFilename:(NSString*)suggestedFilename
-      parentFolder:(NSObject *)parentFolder
-    viewController:(UIViewController *)viewController
-        completion:(void (^)(SafeMetaData *metadata, NSError *error))completion {
-    NSURL * fileURL = nil;
+- (void)create:(NSString *)nickName 
+      fileName:(NSString *)fileName
+          data:(NSData *)data
+  parentFolder:(NSObject *)parentFolder
+viewController:(VIEW_CONTROLLER_PTR)viewController
+    completion:(void (^)(METADATA_PTR _Nullable, const NSError * _Nullable))completion {
+    NSString* extension = fileName.pathExtension;
+    NSString* fileNameOnly = fileName.stringByDeletingPathExtension;
     
-    if(suggestedFilename) {
-        NSString* filename = [[suggestedFilename lastPathComponent] stringByDeletingPathExtension];
-        NSString* extension = [suggestedFilename pathExtension];
+    NSURL * fileURL = [self getFullICloudURLWithFileName:[self getUniqueICloudFilename:fileNameOnly extension:extension]];
+
+    if(!fileURL || fileURL.absoluteString.length == 0) {
         
-        NSString* uniqueFilename = [self getUniqueICloudFilename:filename extension:extension];
-        fileURL = [self getFullICloudURLWithFileName:uniqueFilename];
+        completion(nil, [Utils createNSError:@"Could not create an iCloud database because could not find a good path for it!" errorCode:-1]);
+        return;
     }
     
-    if(!fileURL) {
-        fileURL = [self getFullICloudURLWithFileName:[self getUniqueICloudFilename:nickName extension:extension]];
-    }
-    
-    NSLog(@"Want to create file at %@", fileURL);
-    
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [SVProgressHUD showWithStatus:@"Uploading..."];
-    });
-    
-    StrongboxUIDocument * doc = [[StrongboxUIDocument alloc] initWithData:data fileUrl:fileURL];
-    //NSLog(@"Loaded File URL: %@ in state: [%@]", [doc.fileURL lastPathComponent], [self stringForDocumentState:doc.documentState]);
+    dispatch_async(dispatch_get_main_queue(), ^{ 
+        [SVProgressHUD showWithStatus:NSLocalizedString(@"generic_saving_ellipsis", @"Saving...")];
+        
+        StrongboxUIDocument * doc = [[StrongboxUIDocument alloc] initWithData:data fileUrl:fileURL];
+        
 
-    [doc saveToURL:fileURL forSaveOperation:UIDocumentSaveForCreating completionHandler:^(BOOL success) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [SVProgressHUD dismiss];
-        });
-        
-        if (!success) {
-            NSLog(@"Failed to create file at %@", fileURL);
-            completion(nil, [Utils createNSError:@"Failed to create file" errorCode:-5]);
-            return;
-        }
-        
-        NSLog(@"File created at %@", fileURL);
-    
-        [doc closeWithCompletionHandler:^(BOOL success) {
+        [doc saveToURL:fileURL forSaveOperation:UIDocumentSaveForCreating completionHandler:^(BOOL success) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [SVProgressHUD dismiss];
+            });
+            
             if (!success) {
-                NSLog(@"Failed to close %@", fileURL);
-            }
-        }];
-        
-        SafeMetaData * metadata = [[SafeMetaData alloc] initWithNickName:nickName
-                                                         storageProvider:kiCloud
-                                                                fileName:[fileURL lastPathComponent]
-                                                          fileIdentifier:[fileURL absoluteString]];
-        
-        completion(metadata, nil);
-    }];
-}
-
-- (void)read:(SafeMetaData *)safeMetaData viewController:(UIViewController *)viewController isAutoFill:(BOOL)isAutoFill completion:(void (^)(NSData * _Nullable, NSError * _Nullable))completion {
-    NSURL *fileUrl = [NSURL URLWithString:safeMetaData.fileIdentifier];
-    StrongboxUIDocument * doc = [[StrongboxUIDocument alloc] initWithFileURL:fileUrl];
-    
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [SVProgressHUD showWithStatus:@"Reading..."];
-    });
-    
-    [doc openWithCompletionHandler:^(BOOL success) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [SVProgressHUD dismiss];
-        });
-        
-        if (!success) {
-            NSLog(@"Failed to open %@", fileUrl);
-            completion(nil, [Utils createNSError:@"Could not read iCloud file. Try restarting your device." errorCode:-6]);
-            return;
-        }
-
-        //NSLog(@"Loaded File URL: %@ in state: [%@]", [doc.fileURL lastPathComponent], [self stringForDocumentState:doc.documentState]);
-        
-        NSData* data = doc.data;
-        
-        [doc closeWithCompletionHandler:^(BOOL success) {
-            if (!success) {
-                NSLog(@"Failed to close %@", fileUrl);
-                completion(nil, [Utils createNSError:@"Failed to close after reading" errorCode:-6]);
+                slog(@"Failed to create file at %@", fileURL);
+                completion(nil, [Utils createNSError:@"Failed to create file" errorCode:StrongboxErrorCodes.couldNotCreateICloudFile]);
                 return;
             }
             
-            completion(data, nil);
+            slog(@"File created at %@", fileURL);
+        
+            [doc closeWithCompletionHandler:^(BOOL success) {
+                if (!success) {
+                    slog(@"Failed to close %@", fileURL);
+                }
+            }];
+            
+            DatabasePreferences * metadata = [DatabasePreferences templateDummyWithNickName:nickName
+                                                                            storageProvider:kiCloud
+                                                                                   fileName:[fileURL lastPathComponent]
+                                                                             fileIdentifier:[fileURL absoluteString]];
+            
+            completion(metadata, nil);
         }];
-    }];
+    });
 }
 
-- (void)update:(SafeMetaData *)safeMetaData data:(NSData *)data isAutoFill:(BOOL)isAutoFill completion:(void (^)(NSError * _Nullable))completion {
-    NSURL *fileUrl = [NSURL URLWithString:safeMetaData.fileIdentifier];
-    StrongboxUIDocument * doc = [[StrongboxUIDocument alloc] initWithData:data fileUrl:fileUrl];
-    
-    NSLog(@"Opened File URL: %@ in state: [%@]", [doc.fileURL lastPathComponent], [self stringForDocumentState:doc.documentState]);
 
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [SVProgressHUD showWithStatus:@"Updating..."];
-    });
+- (void)getModDate:(nonnull METADATA_PTR)safeMetaData completion:(nonnull StorageProviderGetModDateCompletionBlock)completion {
+    slog(@"🔴 AppleiCloudProvider::getModDate not impl!");
     
-    [doc saveToURL:fileUrl forSaveOperation:UIDocumentSaveForOverwriting completionHandler:^(BOOL success) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [SVProgressHUD dismiss];
-        });
-        
-        if (!success) {
-            NSLog(@"Failed to update file at %@", fileUrl);
-            completion([Utils createNSError:@"Failed to update file" errorCode:-5]);
+    
+}
+
+- (void)pullDatabase:(DatabasePreferences *)safeMetaData interactiveVC:(UIViewController *)viewController options:(StorageProviderReadOptions *)options completion:(StorageProviderReadCompletionBlock)completion {
+    dispatch_async(dispatch_get_main_queue(), ^{ 
+        NSURL *fileUrl = [NSURL URLWithString:safeMetaData.fileIdentifier];
+
+        StrongboxUIDocument * doc = [[StrongboxUIDocument alloc] initWithFileURL:fileUrl];
+        if (!doc) {
+            completion(kReadResultError, nil, nil, [Utils createNSError:@"Invalid iCloud URL" errorCode:-6]);
             return;
         }
         
-        NSLog(@"File updated at %@", fileUrl);
+        if (viewController) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [SVProgressHUD showWithStatus:NSLocalizedString(@"storage_provider_status_reading", @"A storage provider is in the process of reading. This is the status displayed on the progress dialog. In english:  Reading...")];
+            });
+        }
         
-        [doc closeWithCompletionHandler:^(BOOL success) {
-            if (!success) {
-                NSLog(@"Failed to close %@", fileUrl);
+        [doc openWithCompletionHandler:^(BOOL success) {
+            if (viewController) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [SVProgressHUD dismiss];
+                });
             }
+             
+            if (!success) {
+                slog(@"Failed to open %@", fileUrl);
+                completion(kReadResultError, nil, nil, [Utils createNSError:@"Could not read iCloud file. Try restarting your device." errorCode:-6]);
+                return;
+            }
+
             
-            completion(nil);
+            NSData* data = doc.data;
+            [doc closeWithCompletionHandler:^(BOOL success) {
+                if (!success) {
+                    slog(@"Failed to close %@", fileUrl);
+                    completion(kReadResultError, nil, nil, [Utils createNSError:@"Failed to close after reading" errorCode:-6]);
+                    return;
+                }
+                
+                if ( options && options.onlyIfModifiedDifferentFrom && doc.fileModificationDate && [doc.fileModificationDate isEqualToDateWithinEpsilon:options.onlyIfModifiedDifferentFrom] ) {
+                    completion(kReadResultModifiedIsSameAsLocal, nil, nil, nil);
+                }
+                else {
+                    completion(kReadResultSuccess, data, doc.fileModificationDate, nil);
+                }
+            }];
         }];
-    }];
+    });
 }
 
-- (void)delete:(SafeMetaData*)safeMetaData completion:(void (^)(NSError *error))completion {
+- (void)pushDatabase:(DatabasePreferences *)safeMetaData interactiveVC:(UIViewController *)viewController data:(NSData *)data completion:(StorageProviderUpdateCompletionBlock)completion {
+    NSURL *fileUrl = [NSURL URLWithString:safeMetaData.fileIdentifier];
+    
+    dispatch_async(dispatch_get_main_queue(), ^{ 
+        StrongboxUIDocument * doc = [[StrongboxUIDocument alloc] initWithData:data fileUrl:fileUrl];
+        
+        slog(@"Opened File URL: %@ in state: [%@]", [doc.fileURL lastPathComponent], [self stringForDocumentState:doc.documentState]);
+
+        if (viewController) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [SVProgressHUD showWithStatus:@"Updating..."];
+            });
+        }
+        
+        [doc saveToURL:fileUrl forSaveOperation:UIDocumentSaveForOverwriting completionHandler:^(BOOL success) {
+            if (viewController) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [SVProgressHUD dismiss];
+                });
+            }
+            
+            if (!success) {
+                slog(@"Failed to update file at %@", fileUrl);
+                completion(kUpdateResultError, nil, [Utils createNSError:@"Failed to update file" errorCode:-5]);
+                return;
+            }
+            
+            slog(@"File updated at %@", fileUrl);
+            
+            [doc closeWithCompletionHandler:^(BOOL success) {
+                if (!success) {
+                    slog(@"Failed to close %@", fileUrl);
+                }
+                
+                completion(kUpdateResultSuccess, doc.fileModificationDate, nil);
+            }];
+        }];
+    });
+}
+
+- (void)delete:(DatabasePreferences*)safeMetaData completion:(void (^)(NSError *error))completion {
     if(safeMetaData.storageProvider != kiCloud) {
-        NSLog(@"Safe is not an Apple iCloud safe!");
+        slog(@"Safe is not an Apple iCloud safe!");
         return;
     }
  
-//    NSURL *url = [NSURL URLWithString:safeMetaData.fileIdentifier];
-//    NSURL *ubiq = [[NSFileManager defaultManager] URLForUbiquityContainerIdentifier:nil];
-//    NSURL *ubiquitousPackage = [ubiq URLByAppendingPathComponent:safeMetaData.fileName];
-    NSURL * url = [self getFullICloudURLWithFileName:safeMetaData.fileName];
 
-    // Wrap in file coordinator
+
+
+    
+    NSURL * url = [self getFullICloudURLWithFileName:safeMetaData.fileName];
+    
+    [self deleteICloudUrl:url safeMetaData:safeMetaData secondAttempt:NO completion:completion];
+}
+
+- (void)deleteICloudUrl:(NSURL*)url safeMetaData:(DatabasePreferences*)safeMetaData secondAttempt:(BOOL)secondAttempt completion:(void (^)(NSError *error))completion {
+    
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^(void) {
         NSFileCoordinator* fileCoordinator = [[NSFileCoordinator alloc] initWithFilePresenter:nil];
         [fileCoordinator coordinateWritingItemAtURL:url
@@ -222,10 +228,16 @@ suggestedFilename:nil
                                              NSFileManager* fileManager = [[NSFileManager alloc] init];
                                              NSError *error2;
                                              [fileManager removeItemAtURL:writingURL error:&error2];
-                                             if(completion) {
-                                                 completion(error2);
-                                             }
-                                         }];
+            if(error2 && !secondAttempt) { 
+                NSURL* urlSecondAttempt = [NSURL URLWithString:safeMetaData.fileIdentifier];
+                [self deleteICloudUrl:urlSecondAttempt safeMetaData:safeMetaData secondAttempt:YES completion:completion];
+            }
+            else {
+                 if(completion) {
+                     completion(error2);
+                 }
+            }
+        }];
     });
 }
 
@@ -251,24 +263,22 @@ suggestedFilename:nil
 
 - (void)      list:(NSObject *)parentFolder
     viewController:(UIViewController *)viewController
-        completion:(void (^)(BOOL, NSArray<StorageBrowserItem *> *, NSError *))completion {
-    // NOTIMPL
-    NSLog(@"NOTIMPL: list");
+        completion:(void (^)(BOOL, NSArray<StorageBrowserItem *> *, const NSError *))completion {
+    
+    slog(@"NOTIMPL: list");
 }
 
-- (void)readWithProviderData:(NSObject *)providerData
-              viewController:(UIViewController *)viewController
-                  completion:(void (^)(NSData *data, NSError *error))completionHandler {
-        NSLog(@"NOTIMPL: readWithProviderData");
+- (void)readWithProviderData:(NSObject *)providerData viewController:(UIViewController *)viewController options:(StorageProviderReadOptions *)options completion:(StorageProviderReadCompletionBlock)completionHandler {
+    slog(@"NOTIMPL: readWithProviderData");
 }
 
 - (void)loadIcon:(NSObject *)providerData viewController:(UIViewController *)viewController
       completion:(void (^)(UIImage *image))completionHandler {
-        NSLog(@"NOTIMPL: loadIcon");
+        slog(@"NOTIMPL: loadIcon");
 }
 
-- (SafeMetaData *)getSafeMetaData:(NSString *)nickName providerData:(NSObject *)providerData {
-        NSLog(@"NOTIMPL: getSafeMetaData");
+- (DatabasePreferences *)getDatabasePreferences:(NSString *)nickName providerData:(NSObject *)providerData {
+    slog(@"NOTIMPL: getDatabasePreferences");
     return nil;
 }
 

@@ -3,15 +3,14 @@
 //  Strongbox
 //
 //  Created by Mark on 25/09/2017.
-//  Copyright © 2017 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import "iCloudSafesCoordinator.h"
-#import "Settings.h"
-#import "AppleICloudProvider.h"
 #import "LocalDeviceStorageProvider.h"
 #import "Strongbox.h"
-#import "SafesList.h"
+#import "DatabasePreferences.h"
+#import "AppPreferences.h"
 
 @implementation iCloudSafesCoordinator
 
@@ -42,22 +41,35 @@ BOOL _migrationInProcessDoNotUpdateSafesCollection;
     return self;
 }
 
-- (void)initializeiCloudAccessWithCompletion:(void (^)(BOOL available)) completion {
+- (BOOL)fastAvailabilityTest {
+    if ( AppPreferences.sharedInstance.disableNetworkBasedFeatures ) {
+        return NO;
+    }
+    
+    return NSFileManager.defaultManager.ubiquityIdentityToken != nil;
+}
+
+- (void)initializeiCloudAccess {
+    if ( AppPreferences.sharedInstance.disableNetworkBasedFeatures ) {
+        return;
+    }
+    
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         _iCloudRoot = [[NSFileManager defaultManager] URLForUbiquityContainerIdentifier:kStrongboxICloudContainerIdentifier];
-        if (_iCloudRoot != nil) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                //NSLog(@"iCloud available at: %@", _iCloudRoot);
-                completion(TRUE);
-            });
-        }
-        else {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                //NSLog(@"iCloud not available");
-                completion(FALSE);
-            });
-        }
+        
+        BOOL available = (_iCloudRoot != nil);
+        
+
     });
+}
+
+- (NSURL *)iCloudDocumentsFolder {
+    if (_iCloudRoot) {
+        return [_iCloudRoot URLByAppendingPathComponent:@"Documents" isDirectory:YES];
+    }
+    else {
+        return nil;
+    }
 }
 
 - (void)migrateLocalToiCloud:(void (^)(BOOL show)) completion {
@@ -85,46 +97,41 @@ BOOL _migrationInProcessDoNotUpdateSafesCollection;
 }
 
 - (void)localToiCloudImpl {
-    NSLog(@"local => iCloud impl [%lu]", (unsigned long)_iCloudFiles.count);
+    slog(@"local => iCloud impl [%lu]", (unsigned long)_iCloudFiles.count);
     
     self.showMigrationUi(YES);
     
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^(void) {
-        NSArray<SafeMetaData*> *localSafes = [SafesList.sharedInstance getSafesOfProvider:kLocalDevice];
+        NSArray<DatabasePreferences*> *localSafes = [DatabasePreferences forAllDatabasesOfProvider:kLocalDevice];
         
-        for(SafeMetaData *safe in localSafes) {
+        for(DatabasePreferences *safe in localSafes) {
             [self migrateLocalSafeToICloud:safe];
-            [SafesList.sharedInstance update:safe];
         }
         
         self.showMigrationUi(NO);
-//        self.onSafesCollectionUpdated();
         
         _migrationInProcessDoNotUpdateSafesCollection = NO;
     });
 }
 
 - (void)iCloudToLocalImpl {
-    NSLog(@"iCloud => local impl  [%lu]", (unsigned long)_iCloudFiles.count);
+    slog(@"iCloud => local impl  [%lu]", (unsigned long)_iCloudFiles.count);
     
     self.showMigrationUi(YES);
     
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^(void) {
-        NSArray<SafeMetaData*> *iCloudSafes = [SafesList.sharedInstance getSafesOfProvider:kiCloud];
+        NSArray<DatabasePreferences*> *iCloudSafes = [DatabasePreferences forAllDatabasesOfProvider:kiCloud];
         
-        for(SafeMetaData *safe in iCloudSafes) {
+        for(DatabasePreferences *safe in iCloudSafes) {
             [self migrateICloudSafeToLocal:safe];
-            [SafesList.sharedInstance update:safe];
         }
         
         self.showMigrationUi(NO);
-//        self.onSafesCollectionUpdated();
-        
         _migrationInProcessDoNotUpdateSafesCollection = NO;
     });
 }
 
-- (void)migrateLocalSafeToICloud:(SafeMetaData *)safe {
+- (void)migrateLocalSafeToICloud:(DatabasePreferences *)safe {
     NSURL *fileURL = [[LocalDeviceStorageProvider sharedInstance] getFileUrl:safe];
     
     NSString * displayName = safe.nickName;
@@ -134,11 +141,11 @@ BOOL _migrationInProcessDoNotUpdateSafesCollection;
     NSURL *destURL = [self getFullICloudURLWithFileName:[self getUniqueICloudFilename:displayName extension:extension]];
     
     NSError * error;
-    BOOL success = [[NSFileManager defaultManager] setUbiquitous:[Settings sharedInstance].iCloudOn itemAtURL:fileURL destinationURL:destURL error:&error];
+    BOOL success = [[NSFileManager defaultManager] setUbiquitous:YES itemAtURL:fileURL destinationURL:destURL error:&error];
     
     if (success) {
         NSString* newNickName = [self displayNameFromUrl:destURL];
-        NSLog(@"New Nickname = [%@] Moved %@ to %@", newNickName, fileURL, destURL);
+        slog(@"New Nickname = [%@] Moved %@ to %@", newNickName, fileURL, destURL);
 
         safe.nickName = newNickName;
         safe.storageProvider = kiCloud;
@@ -146,11 +153,11 @@ BOOL _migrationInProcessDoNotUpdateSafesCollection;
         safe.fileName = [destURL lastPathComponent];
     }
     else {
-        NSLog(@"Failed to move %@ to %@: %@", fileURL, destURL, error.localizedDescription);
+        slog(@"Failed to move %@ to %@: %@", fileURL, destURL, error.localizedDescription);
     }
 }
 
-- (void)migrateICloudSafeToLocal:(SafeMetaData *)safe {
+- (void)migrateICloudSafeToLocal:(DatabasePreferences *)safe {
     NSFileCoordinator* fileCoordinator = [[NSFileCoordinator alloc] initWithFilePresenter:nil];
     [fileCoordinator coordinateReadingItemAtURL:[NSURL URLWithString:safe.fileIdentifier] options:NSFileCoordinatorReadingWithoutChanges error:nil byAccessor:^(NSURL *newURL) {
         NSData* data = [NSData dataWithContentsOfURL:newURL];
@@ -159,14 +166,14 @@ BOOL _migrationInProcessDoNotUpdateSafesCollection;
         extension = extension ? extension : @"";
         
         [[LocalDeviceStorageProvider sharedInstance] create:safe.nickName
-                                                  extension:extension
+                                                   fileName:safe.fileName
                                                        data:data
                                                parentFolder:nil
                                              viewController:nil
-                                                 completion:^(SafeMetaData *metadata, NSError *error)
+                                                 completion:^(DatabasePreferences *metadata, NSError *error)
          {
              if (error == nil) {
-                 NSLog(@"Copied %@ to %@ (%d)", newURL, metadata.fileIdentifier, [Settings sharedInstance].iCloudOn);
+                 slog(@"Copied %@ to %@", newURL, metadata.fileIdentifier);
                  
                  safe.nickName = metadata.nickName;
                  safe.storageProvider = kLocalDevice;
@@ -174,7 +181,7 @@ BOOL _migrationInProcessDoNotUpdateSafesCollection;
                  safe.fileName = metadata.fileName;
              }
              else {
-                 NSLog(@"Failed to copy %@ to %@: %@", newURL, metadata.fileIdentifier, error.localizedDescription);
+                 slog(@"Failed to copy %@ to %@: %@", newURL, metadata.fileIdentifier, error.localizedDescription);
              }
          }];
     }];
@@ -195,7 +202,7 @@ BOOL _migrationInProcessDoNotUpdateSafesCollection;
 
 - (void)stopQuery {
     if (_query) {
-        //NSLog(@"No longer watching iCloud dir...");
+        
         
         [[NSNotificationCenter defaultCenter] removeObserver:self name:NSMetadataQueryDidFinishGatheringNotification object:nil];
         [[NSNotificationCenter defaultCenter] removeObserver:self name:NSMetadataQueryDidUpdateNotification object:nil];
@@ -210,7 +217,7 @@ BOOL _migrationInProcessDoNotUpdateSafesCollection;
     _iCloudURLsReady = NO;
     [_iCloudFiles removeAllObjects];
     
-    //NSLog(@"Starting to watch iCloud dir...");
+    
     
     _query = [self documentQuery];
     
@@ -242,7 +249,7 @@ BOOL _migrationInProcessDoNotUpdateSafesCollection;
     for (NSMetadataItem * result in queryResults) {
         [self logAllCloudStorageKeysForMetadataItem:result];
         
-        // Don't include hidden files or directories
+        
         
         NSNumber * hidden = nil;
         NSURL * fileURL = [result valueForAttribute:NSMetadataItemURLKey];
@@ -262,7 +269,7 @@ BOOL _migrationInProcessDoNotUpdateSafesCollection;
             
             AppleICloudOrLocalSafeFile* iCloudFile = [[AppleICloudOrLocalSafeFile alloc] initWithDisplayName:dn fileUrl:fileURL hasUnresolvedConflicts:huc];
             
-            //NSLog(@"Found on iCloud: %@", iCloudFile);
+            
             
             [_iCloudFiles addObject:iCloudFile];
         }
@@ -270,7 +277,7 @@ BOOL _migrationInProcessDoNotUpdateSafesCollection;
     
     _iCloudURLsReady = YES;
     
-    if ([Settings sharedInstance].iCloudOn && !_migrationInProcessDoNotUpdateSafesCollection) {
+    if ( !_migrationInProcessDoNotUpdateSafesCollection ) {
         [self syncICloudUpdateWithSafesCollection:_iCloudFiles];
     }
 
@@ -294,7 +301,7 @@ BOOL _migrationInProcessDoNotUpdateSafesCollection;
 - (BOOL)fileNameExistsInICloud:(NSString *)fileName {
     BOOL nameExists = NO;
     for (AppleICloudOrLocalSafeFile *file in _iCloudFiles) {
-        if ([[file.fileUrl lastPathComponent] isEqualToString:fileName]) {
+        if ([[file.fileUrl lastPathComponent] compare:fileName] == NSOrderedSame) {
             nameExists = YES;
             break;
         }
@@ -306,7 +313,7 @@ BOOL _migrationInProcessDoNotUpdateSafesCollection;
     NSInteger docCount = 0;
     NSString* newDocName = nil;
     
-    // At this point, the document list should be up-to-date.
+    
     BOOL done = NO;
     BOOL first = YES;
     while (!done) {
@@ -332,35 +339,28 @@ BOOL _migrationInProcessDoNotUpdateSafesCollection;
 }
 
 - (void)syncICloudUpdateWithSafesCollection:(NSArray<AppleICloudOrLocalSafeFile*>*)files {
-    BOOL removed = [self removeAnyDeletedICloudSafes:files];
-    BOOL updated = [self updateAnyICloudSafes:files];
-    BOOL added = [self addAnyNewICloudSafes:files];
-    
-    if(added || removed || updated) {
-        // This is now done via NSNotificationCenter
-        // self.onSafesCollectionUpdated();
-    }
+    [self removeAnyDeletedICloudSafes:files];
+    [self updateAnyICloudSafes:files];
+    [self addAnyNewICloudSafes:files];
 }
 
-- (BOOL)updateAnyICloudSafes:(NSArray<AppleICloudOrLocalSafeFile*> *)files {
-    BOOL updated = NO;
-    
+- (void)updateAnyICloudSafes:(NSArray<AppleICloudOrLocalSafeFile*> *)files {
     NSMutableDictionary<NSString*, AppleICloudOrLocalSafeFile*>* theirs = [self getAllICloudSafeFileNamesFromMetadataFilesList:files];
-    NSDictionary<NSString*, SafeMetaData*>* mine = [self getICloudSafesDictionary];
+    NSDictionary<NSString*, DatabasePreferences*>* mine = [self getICloudSafesDictionary];
     
     for(NSString* fileName in mine.allKeys) {
         AppleICloudOrLocalSafeFile *match = [theirs objectForKey:fileName];
         
         if(match) {
-            SafeMetaData* safe = [mine objectForKey:fileName];
-            safe.fileIdentifier = [match.fileUrl absoluteString];
-            safe.hasUnresolvedConflicts = match.hasUnresolvedConflicts;
-            updated = YES;
-            [SafesList.sharedInstance update:safe];
+            DatabasePreferences* safe = [mine objectForKey:fileName];
+            
+            NSString* newUrl = [match.fileUrl absoluteString];
+            if ( ![safe.fileIdentifier isEqualToString:newUrl] || safe.hasUnresolvedConflicts != match.hasUnresolvedConflicts ) {
+                safe.fileIdentifier = newUrl;
+                safe.hasUnresolvedConflicts = match.hasUnresolvedConflicts;
+            }
         }
     }
-    
-    return updated;
 }
 
 -(BOOL)addAnyNewICloudSafes:(NSArray<AppleICloudOrLocalSafeFile*> *)files {
@@ -368,7 +368,7 @@ BOOL _migrationInProcessDoNotUpdateSafesCollection;
     
     NSMutableDictionary<NSString*, AppleICloudOrLocalSafeFile*>* theirs = [self getAllICloudSafeFileNamesFromMetadataFilesList:files];
     
-    NSDictionary<NSString*, SafeMetaData*>* mine = [self getICloudSafesDictionary];
+    NSDictionary<NSString*, DatabasePreferences*>* mine = [self getICloudSafesDictionary];
     
     for(NSString* fileName in mine.allKeys) {
         [theirs removeObjectForKey:fileName];
@@ -378,14 +378,20 @@ BOOL _migrationInProcessDoNotUpdateSafesCollection;
         NSString *fileName = [safeFile.fileUrl lastPathComponent];
         NSString *displayName = safeFile.displayName;
         
-        SafeMetaData *newSafe = [[SafeMetaData alloc] initWithNickName:displayName storageProvider:kiCloud fileName:fileName fileIdentifier:[safeFile.fileUrl absoluteString]];
+        DatabasePreferences *newSafe = [DatabasePreferences templateDummyWithNickName:displayName storageProvider:kiCloud fileName:fileName fileIdentifier:[safeFile.fileUrl absoluteString]];
         newSafe.hasUnresolvedConflicts = safeFile.hasUnresolvedConflicts;
         
-        NSLog(@"Got New iCloud Safe... Adding [%@]", newSafe.nickName);
+        slog(@"Got New iCloud Safe... Adding [%@]", newSafe.nickName);
+      
         
-        [[SafesList sharedInstance] addWithDuplicateCheck:newSafe];
         
-        added = YES;
+        NSError* error;
+        if ( [newSafe addWithDuplicateCheck:nil initialCacheModDate:nil error:&error] ) {
+            added = YES;
+        }
+        else {
+            slog(@"Did not add iCloud database - error = [%@]", error);
+        }
     }
     
     return added;
@@ -394,27 +400,26 @@ BOOL _migrationInProcessDoNotUpdateSafesCollection;
 - (BOOL)removeAnyDeletedICloudSafes:(NSArray<AppleICloudOrLocalSafeFile*>*)files {
     BOOL removed = NO;
     
-    NSMutableDictionary<NSString*, SafeMetaData*> *safeFileNamesToBeRemoved = [self getICloudSafesDictionary];
+    NSMutableDictionary<NSString*, DatabasePreferences*> *safeFileNamesToBeRemoved = [self getICloudSafesDictionary];
     NSMutableDictionary<NSString*, AppleICloudOrLocalSafeFile*>* theirs = [self getAllICloudSafeFileNamesFromMetadataFilesList:files];
     
     for(NSString* fileName in theirs.allKeys) {
         [safeFileNamesToBeRemoved removeObjectForKey:fileName];
     }
     
-    for(SafeMetaData* safe in safeFileNamesToBeRemoved.allValues) {
-        NSLog(@"iCloud Safe Removed: %@", safe);
-        
-        [SafesList.sharedInstance remove:safe.uuid];
+    for(DatabasePreferences* safe in safeFileNamesToBeRemoved.allValues) {
+        slog(@"iCloud Safe Removed: %@", safe);
+        [safe removeFromDatabasesList];
         removed = YES;
     }
     
     return removed;
 }
 
--(NSMutableDictionary<NSString*, SafeMetaData*>*)getICloudSafesDictionary {
-    NSMutableDictionary<NSString*, SafeMetaData*>* ret = [NSMutableDictionary dictionary];
+-(NSMutableDictionary<NSString*, DatabasePreferences*>*)getICloudSafesDictionary {
+    NSMutableDictionary<NSString*, DatabasePreferences*>* ret = [NSMutableDictionary dictionary];
     
-    for(SafeMetaData *safe in [[SafesList sharedInstance] getSafesOfProvider:kiCloud]) {
+    for( DatabasePreferences *safe in [DatabasePreferences forAllDatabasesOfProvider:kiCloud] ) {
         [ret setValue:safe forKey:safe.fileName];
     }
     
@@ -425,7 +430,7 @@ BOOL _migrationInProcessDoNotUpdateSafesCollection;
     NSMutableDictionary<NSString*, AppleICloudOrLocalSafeFile*>* ret = [NSMutableDictionary dictionary];
     
     for(AppleICloudOrLocalSafeFile *item in files) {
-        if(item.fileUrl && item.fileUrl.lastPathComponent) { // There was a crash here somehow... so protect against
+        if(item.fileUrl && item.fileUrl.lastPathComponent) { 
             [ret setObject:item forKey:item.fileUrl.lastPathComponent];
         }
     }
@@ -436,42 +441,42 @@ BOOL _migrationInProcessDoNotUpdateSafesCollection;
 
 - (void)logAllCloudStorageKeysForMetadataItem:(NSMetadataItem *)item
 {
-//    NSString* displayName = [item valueForAttribute:NSMetadataItemDisplayNameKey];
-//    NSDate* contentChangeDate = [item valueForAttribute:NSMetadataItemFSContentChangeDateKey];
-//    NSNumber *isUbiquitous = [item valueForAttribute:NSMetadataItemIsUbiquitousKey];
-//    NSNumber *hasUnresolvedConflicts = [item valueForAttribute:NSMetadataUbiquitousItemHasUnresolvedConflictsKey];
-//    NSNumber *downloadStatus = [item valueForAttribute:NSMetadataUbiquitousItemDownloadingStatusKey];
-//    NSNumber *isUploaded = [item valueForAttribute:NSMetadataUbiquitousItemIsUploadedKey];
-//    NSNumber *isUploading = [item valueForAttribute:NSMetadataUbiquitousItemIsUploadingKey];
-//    NSNumber *percentDownloaded = [item valueForAttribute:NSMetadataUbiquitousItemPercentDownloadedKey];
-//    NSNumber *percentUploaded = [item valueForAttribute:NSMetadataUbiquitousItemPercentUploadedKey];
-//    NSURL *url = [item valueForAttribute:NSMetadataItemURLKey];
-//
-//    NSNumber * hidden = nil;
-//    [url getResourceValue:&hidden forKey:NSURLIsHiddenKey error:nil];
-//
-//    //BOOL documentExists = [[NSFileManager defaultManager] fileExistsAtPath:[url path]];
-//
-//    NSLog(@"%@ change:%@ hidden:%@ isUbiquitous:%@ hasUnresolvedConflicts:%@ downloadStatus:%@(%@%%) isUploaded:%@ isUploading:%@ (%@%%) - %@",
-//          displayName, contentChangeDate, hidden, isUbiquitous, hasUnresolvedConflicts, downloadStatus, percentDownloaded, isUploaded, isUploading, percentUploaded, url);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 }
 
 - (void)logUpdateNotification:(NSNotification *)notification {
-    //The query reports all files found, every time.
-//
-//    NSLog(@"*********************************************************************************************************");
-//
-//    NSArray* added = [notification.userInfo objectForKey:NSMetadataQueryUpdateAddedItemsKey];
-//    NSArray* changed = [notification.userInfo objectForKey:NSMetadataQueryUpdateChangedItemsKey];
-//    NSArray* removed = [notification.userInfo objectForKey:NSMetadataQueryUpdateRemovedItemsKey];
-//
-//    NSLog(@"+%lu /%lu -%lu", (unsigned long)added.count, (unsigned long)changed.count, (unsigned long)removed.count);
-//
-//    for(NSMetadataItem *item in changed) {
-//        NSLog(@"Changed: %@", item);
-//    }
-//
-//    NSLog(@"*********************************************************************************************************");
+    
+
+
+
+    NSArray* added = [notification.userInfo objectForKey:NSMetadataQueryUpdateAddedItemsKey];
+    NSArray* changed = [notification.userInfo objectForKey:NSMetadataQueryUpdateChangedItemsKey];
+    NSArray* removed = [notification.userInfo objectForKey:NSMetadataQueryUpdateRemovedItemsKey];
+
+
+
+
+
+
+
+
 }
 
 @end

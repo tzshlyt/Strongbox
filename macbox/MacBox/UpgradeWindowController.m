@@ -7,19 +7,23 @@
 //
 
 #import "UpgradeWindowController.h"
-#import "Alerts.h"
+#import "MacAlerts.h"
 #import "Settings.h"
 
-#define kFontName @"Futura-Bold"
+//#define kFontName @"Futura-Bold"
 
-@interface UpgradeWindowController ()
+@interface UpgradeWindowController () // Remove this class completely? We can't actually - too many existing customers
 
-@property (nonatomic, strong) SKProduct *product;
+
 @property (nonatomic) NSInteger cancelDelay;
 @property (nonatomic) BOOL isPurchasing;
 
 @property NSInteger secondsRemaining;
 @property NSTimer *countdownTimer;
+
+@property (weak) IBOutlet NSButton *buttonNoThanks;
+@property (weak) IBOutlet NSButton *buttonUpgrade;
+@property (weak) IBOutlet NSProgressIndicator *progressIndicator;
 
 @end
 
@@ -27,20 +31,17 @@
 
 static UpgradeWindowController *sharedInstance = nil;
 
-+ (void)show:(SKProduct*)product cancelDelay:(NSInteger)cancelDelay
-{
-    if (!sharedInstance)
-    {
++ (void)show:(NSInteger)cancelDelay {
+    if (!sharedInstance) {
         sharedInstance = [[UpgradeWindowController alloc] initWithWindowNibName:@"UpgradeWindowController"];
-        sharedInstance.product = product;
+
         sharedInstance.cancelDelay = cancelDelay;
     }
  
     [sharedInstance showWindow:nil];
 }
 
-- (void)windowWillClose:(NSNotification *)notification
-{
+- (void)windowWillClose:(NSNotification *)notification {
     if ([notification object] == [self window] && self == sharedInstance) {
         sharedInstance = nil;
     }
@@ -50,10 +51,16 @@ static UpgradeWindowController *sharedInstance = nil;
     [[SKPaymentQueue defaultQueue] removeTransactionObserver:self];
     
     if(ret) {
-        Settings.sharedInstance.fullVersion = YES;
+        [Settings.sharedInstance setPro:YES];
     }
     
     [self.window close];
+}
+
+- (void)cancel:(id)sender { 
+    if (self.cancelDelay == 0) {
+        [self close];
+    }
 }
 
 - (void)windowDidLoad {
@@ -61,10 +68,10 @@ static UpgradeWindowController *sharedInstance = nil;
 
     [self.window makeKeyAndOrderFront:nil];
     [self.window center];
-    [self.window setLevel:NSModalPanelWindowLevel]; //NSFloatingWindowLevel];
+    [self.window setLevel:NSModalPanelWindowLevel]; 
     [self.window setHidesOnDeactivate:YES];
     
-    [self customizeButtonsBasedOnProduct];
+
     
     [[SKPaymentQueue defaultQueue] addTransactionObserver:self];
     
@@ -73,117 +80,13 @@ static UpgradeWindowController *sharedInstance = nil;
     }
 }
 
-- (NSString*)getPriceTextFromProduct {
-    NSNumberFormatter* formatter = [[NSNumberFormatter alloc] init];
-    formatter.numberStyle = NSNumberFormatterCurrencyStyle;
-    formatter.locale = self.product.priceLocale;
-    NSString* localCurrency = [formatter stringFromNumber:self.product.price];
-    return [NSString stringWithFormat:@"(%@)*", localCurrency];
-}
-
-- (void) customizeButtonsBasedOnProduct {
-    [self.buttonUpgrade.layer setBackgroundColor:[NSColor redColor].CGColor];
-    self.buttonUpgrade.layer.cornerRadius = 15;
-    
-    NSMutableParagraphStyle *style = [[NSParagraphStyle defaultParagraphStyle] mutableCopy];
-    [style setParagraphSpacing:1.0f];
-    [style setAlignment:NSTextAlignmentCenter];
-    [style setLineBreakMode:NSLineBreakByWordWrapping];
-    
-    NSFont *font1 = [NSFont fontWithName:kFontName size:32.0f];
-    NSFont *font2 = [NSFont fontWithName:kFontName size:16.0f];
-    
-    NSString *osxMode = [[NSUserDefaults standardUserDefaults] stringForKey:@"AppleInterfaceStyle"];
-    
-    // * If osxMode is nil then it isn't in dark mode, but if osxMode is @"Dark" then it is in dark mode.
-    
-    NSColor *upgradeButtonSubtitleColor;
-    NSColor *upgradeButtonTitleColor;
-    
-    if([osxMode isEqualToString:@"Dark"]) {
-        upgradeButtonSubtitleColor = [NSColor colorWithRed:255/255 green:255/255 blue:0/255 alpha:1]; // Lemon
-        upgradeButtonTitleColor = [NSColor whiteColor];
-    }
-    else {
-        upgradeButtonSubtitleColor = [NSColor controlTextColor]; //[NSColor colorWithRed:255/255 green:255/255 blue:0/255 alpha:1]; // Lemon
-        upgradeButtonTitleColor = [NSColor controlTextColor];
-    }
-    
-    NSDictionary *dict1;
-    if(font1) {
-        dict1 = @{NSUnderlineStyleAttributeName:@(NSUnderlineStyleNone),
-                  NSFontAttributeName:font1,
-                  NSForegroundColorAttributeName: upgradeButtonTitleColor,
-                  NSParagraphStyleAttributeName:style}; // Added line
-    }
-    else {
-        dict1 = @{NSUnderlineStyleAttributeName:@(NSUnderlineStyleNone),
-                  NSForegroundColorAttributeName: upgradeButtonTitleColor,
-                  NSParagraphStyleAttributeName:style}; // Added line
-    }
-    
-    NSDictionary *dict2;
-    if(font2) {
-        dict2 = @{NSUnderlineStyleAttributeName:@(NSUnderlineStyleNone),
-                  NSFontAttributeName:font2,
-                  NSForegroundColorAttributeName: upgradeButtonSubtitleColor,
-                  NSParagraphStyleAttributeName:style}; // Added line
-    }
-    else {
-        dict2 = @{NSUnderlineStyleAttributeName:@(NSUnderlineStyleNone),
-                  NSForegroundColorAttributeName: upgradeButtonSubtitleColor,
-                  NSParagraphStyleAttributeName:style}; // Added line
-    }
-    
-    if(self.product != nil) {
-        NSMutableAttributedString *attString = [[NSMutableAttributedString alloc] init];
-        [attString appendAttributedString:[[NSAttributedString alloc] initWithString:@"Upgrade\n" attributes:dict1]];
-        
-        NSString* priceText = [self getPriceTextFromProduct];
-        [attString appendAttributedString:[[NSAttributedString alloc] initWithString:priceText attributes:dict2]];
-        
-        self.buttonUpgrade.enabled = YES;
-        self.buttonRestore.enabled = YES;
-        self.buttonUpgrade.stringValue = attString.string;
-        
-        [self.buttonUpgrade setAttributedTitle:attString];
-        //[[self.buttonUpgrade titleLabel] setNumberOfLines:2];
-        //[[self.buttonUpgrade titleLabel] setLineBreakMode:NSLineBreakByWordWrapping];
-    }
-    else {
-        NSFont *font3 = [NSFont fontWithName:kFontName size:16.0f];
-
-        NSDictionary *dict3;
-        if(font3) {
-            dict3 = @{NSUnderlineStyleAttributeName:@(NSUnderlineStyleNone),
-                      NSFontAttributeName:font3,
-                      NSForegroundColorAttributeName: upgradeButtonSubtitleColor,
-                      NSParagraphStyleAttributeName:style}; // Added line
-        }
-        else {
-            dict3 = @{NSUnderlineStyleAttributeName:@(NSUnderlineStyleNone),
-                      NSForegroundColorAttributeName: upgradeButtonSubtitleColor,
-                      NSParagraphStyleAttributeName:style}; // Added line
-        }
-
-        NSMutableAttributedString *attString = [[NSMutableAttributedString alloc] init];
-        [attString appendAttributedString:[[NSAttributedString alloc] initWithString:@"Upgrade Momentarily Unavailable"
-                                           @"\nPlease Check Your Connection and Try Again Later"
-                                                                          attributes:dict3]];
-        [self.buttonUpgrade setAttributedTitle:attString];
-
-        [self.buttonRestore setTitle:@"Restore Momentarily Unavailable"];
-    
-        self.buttonUpgrade.enabled = NO;
-        self.buttonRestore.enabled = NO;
-    }
-}
-
-- (void) startNoThanksCountdown {
-    NSLog(@"Starting No Thanks Countdown with %ld delay", (long)self.cancelDelay);
+- (void)startNoThanksCountdown {
+    slog(@"Starting No Thanks Countdown with %ld delay", (long)self.cancelDelay);
     
     [self.buttonNoThanks setEnabled:NO];
-    [self.buttonNoThanks setTitle:[NSString stringWithFormat:@"No Thanks (%ld)", (long)self.cancelDelay]];
+    
+    NSString* loc = NSLocalizedString(@"mac_upgrade_no_thanks_seconds_remaining_fmt", @"No Thanks (%ld)");
+    [self.buttonNoThanks setTitle:[NSString stringWithFormat:loc, (long)self.cancelDelay]];
 
     if(self.countdownTimer) {
         [self.countdownTimer invalidate];
@@ -199,17 +102,20 @@ static UpgradeWindowController *sharedInstance = nil;
 }
 
 - (void)updateNoThanksCountdown {
-    NSLog(@"timer: %ld", (long)self.secondsRemaining);
+
     self.secondsRemaining--;
 
     if(self.secondsRemaining < 1) {
-        [self.buttonNoThanks setTitle:@"No Thanks"];
+        NSString* loc = NSLocalizedString(@"mac_upgrade_no_thanks", @"No Thanks");
+
+        [self.buttonNoThanks setTitle:loc];
         [self.buttonNoThanks setEnabled:YES];
         [self.countdownTimer invalidate];
         self.countdownTimer = nil;
     }
     else {
-        [self.buttonNoThanks setTitle:[NSString stringWithFormat:@"No Thanks (%ld)", (long)self.secondsRemaining]];
+        NSString* loc = NSLocalizedString(@"mac_upgrade_no_thanks_seconds_remaining_fmt", @"No Thanks (%ld)");
+        [self.buttonNoThanks setTitle:[NSString stringWithFormat:loc, (long)self.secondsRemaining]];
     }
 }
 
@@ -225,52 +131,55 @@ static UpgradeWindowController *sharedInstance = nil;
 }
 
 - (IBAction)onPurchase:(id)sender {
-    if ([SKPaymentQueue canMakePayments]) {
-        self.isPurchasing = YES;
-        self.buttonUpgrade.enabled = NO;
-        self.buttonRestore.enabled = NO;
-        self.buttonNoThanks.enabled = NO;
-        [self.textViewDetails setTextColor: [NSColor disabledControlTextColor]];
-        [self showProgressIndicator];
-        
-        SKPayment *payment = [SKPayment paymentWithProduct:self.product];
-        [[SKPaymentQueue defaultQueue] addPayment:payment];
-    }
-    else{
-        [Alerts info:@"Purchases Are Disabled on Your Device." window:self.window];
-    }
+    [MacAlerts twoOptionsWithCancel:NSLocalizedString(@"upgrade_vc_old_freemium_upgrade_options_title", @"Strongbox Upgrade Options")
+                    informativeText:NSLocalizedString(@"upgrade_vc_strongbox_unified_message", @"Strongbox is now available for both iOS and macOS as a unified App.\n\nIf you have already purchased Strongbox then click 'Restore' below.\n\nIf you are new and want to Upgrade, the best way to do that is via the unified Strongbox app. Click 'View Strongbox Unified App' below to view on the App Store.")
+                  option1AndDefault:NSLocalizedString(@"upgrade_vc_old_freemium_upgrade_view_unified", @"View Strongbox Unified")
+                            option2:NSLocalizedString(@"upgrade_vc_old_freemium_upgrade_restore_pro", @"Restore my Pro Purchase")
+                             window:self.window
+                         completion:^(int response) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if ( response == 0 ) {
+                [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:@"itms-apps:
+                [self onNoThanks:nil];
+            }
+            else if ( response == 1 ) {
+                [self onRestore:nil];
+            }
+        });
+    }];
 }
 
 - (IBAction)onRestore:(id)sender {
     self.isPurchasing = NO;
     self.buttonUpgrade.enabled = NO;
-    self.buttonRestore.enabled = NO;
     self.buttonNoThanks.enabled = NO;
-    [self.textViewDetails setTextColor: [NSColor disabledControlTextColor]];
     [self showProgressIndicator];
 
-    [[SKPaymentQueue defaultQueue] restoreCompletedTransactions];
+    [[SKPaymentQueue defaultQueue] restoreCompletedTransactions];    
 }
 
 #pragma mark StoreKit Delegate
 
 - (void)paymentQueue:(SKPaymentQueue *)queue restoreCompletedTransactionsFailedWithError:(NSError *)error {
-    NSLog(@"restoreCompletedTransactionsFailedWithError: %@", error);
+    slog(@"restoreCompletedTransactionsFailedWithError: %@", error);
     
     dispatch_async(dispatch_get_main_queue(), ^{
-        [Alerts error:@"Error in restoreCompletedTransactionsFailedWithError" error:error window:self.window completion:^{
+        [MacAlerts error:@"Error in restoreCompletedTransactionsFailedWithError" error:error window:self.window completion:^{
             [self close:NO];
         }];
     });
  }
 
 - (void)paymentQueueRestoreCompletedTransactionsFinished:(SKPaymentQueue *)queue {
-    NSLog(@"paymentQueueRestoreCompletedTransactionsFinished: %@", queue);
+    slog(@"paymentQueueRestoreCompletedTransactionsFinished: %@", queue);
     
     if(queue.transactions.count == 0) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            [Alerts info:@"Restoration Unsuccessful"
-         informativeText:@"Could not find any previously purchased products."
+            NSString* loc = NSLocalizedString(@"mac_upgrade_restoration_unsuccessful", @"Restoration Unsuccessful");
+            NSString* loc2 = NSLocalizedString(@"mac_upgrade_could_not_find_any_previous_purchases", @"Could not find any previously purchased products.");
+
+            [MacAlerts info:loc
+         informativeText:loc2
                   window:self.window
               completion:^{
                     [self close:NO];
@@ -284,9 +193,12 @@ static UpgradeWindowController *sharedInstance = nil;
 
 - (void)onSuccessfulRestore {
     dispatch_async(dispatch_get_main_queue(), ^{
-        [Alerts info:@"Welcome back to Strongbox Pro"
-     informativeText:@"Upgrade Restored Successfully. Thank you for your support!\n\n"
-         @"Please restart the Application to enjoy your Pro features."
+        NSString* loc = NSLocalizedString(@"mac_upgrade_welcome_back_to_strongbox", @"Welcome back to Strongbox Pro");
+        NSString* loc2 = NSLocalizedString(@"mac_upgrade_upgrade_restored_success", @"Upgrade Restored Successfully. Thank you for your support!\n\n"
+        @"Please restart the Application to enjoy your Pro features.");
+
+        [MacAlerts info:loc
+     informativeText:loc2
               window:self.window
           completion:^{
               [self close:YES];
@@ -299,15 +211,18 @@ updatedTransactions:(NSArray *)transactions {
     for (SKPaymentTransaction *transaction in transactions) {
         switch (transaction.transactionState) {
             case SKPaymentTransactionStatePurchasing:
-                NSLog(@"Purchasing");
+                slog(@"Purchasing");
                 break;
             case SKPaymentTransactionStatePurchased:
             {
                 [[SKPaymentQueue defaultQueue] finishTransaction:transaction];
-                
+
+                NSString* loc = NSLocalizedString(@"mac_upgrade_welcome_to_strongbox", @"Welcome to Strongbox Pro");
+                NSString* loc2 = NSLocalizedString(@"mac_upgrade_upgrade_successful_thank_you", @"Upgrade to Pro version successful! Thank you for your support!\n\nPlease restart the Application to enjoy your Pro features.");
+
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    [Alerts info:@"Welcome to Strongbox Pro"
-                 informativeText:@"Upgrade to Pro version successful! Thank you for your support!\n\nPlease restart the Application to enjoy your Pro features."
+                    [MacAlerts info:loc
+                 informativeText:loc2
                           window:self.window  completion:^{
                         [self close:YES];
                     }];
@@ -316,7 +231,7 @@ updatedTransactions:(NSArray *)transactions {
                 break;
             case SKPaymentTransactionStateRestored:
             {
-                NSLog(@"updatedTransactions: Restored");
+                slog(@"updatedTransactions: Restored");
                 [[SKPaymentQueue defaultQueue] finishTransaction:transaction];
                 
                 if(self.isPurchasing) {
@@ -326,22 +241,145 @@ updatedTransactions:(NSArray *)transactions {
                 break;
             case SKPaymentTransactionStateFailed:
             {
-                NSLog(@"Purchase failed %@", transaction.error);
+                slog(@"Purchase failed %@", transaction.error);
                 
                 [[SKPaymentQueue defaultQueue] finishTransaction:transaction];
                 
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    [Alerts error:@"Failed to Upgrade" error:transaction.error window:self.window completion:^{
+                    NSString* loc = NSLocalizedString(@"mac_upgrade_failed_to_upgrade", @"Failed to Upgrade");
+
+                    [MacAlerts error:loc
+                            error:transaction.error
+                           window:self.window
+                       completion:^{
                         [self close:NO];
                     }];
                 });
              }
                 break;
             default:
-                NSLog(@"Purchase State %ld", (long)transaction.transactionState);
+                slog(@"Purchase State %ld", (long)transaction.transactionState);
                 break;
         }
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 @end

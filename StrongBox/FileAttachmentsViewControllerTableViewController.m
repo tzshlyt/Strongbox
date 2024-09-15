@@ -3,7 +3,7 @@
 //  Strongbox
 //
 //  Created by Mark on 01/11/2018.
-//  Copyright © 2018 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import "FileAttachmentsViewControllerTableViewController.h"
@@ -13,14 +13,19 @@
 #import <Photos/Photos.h>
 #import "Alerts.h"
 #import "Utils.h"
-#import "SVProgressHUD/SVProgressHUD.h"
+#import "SVProgressHUD.h"
 #import "AddAttachmentHelper.h"
 #import "NSArray+Extensions.h"
+#import "FileManager.h"
+#import "StreamUtils.h"
+#import "NSData+Extensions.h"
+#import "Constants.h"
+#import "UITableView+EmptyDataSet.h"
 
 @interface FileAttachmentsViewControllerTableViewController () <QLPreviewControllerDataSource, QLPreviewControllerDelegate>
 
 @property (weak, nonatomic) IBOutlet UIBarButtonItem *buttonAdd;
-@property NSMutableArray<UiAttachment*> *workingAttachments;
+@property NSMutableDictionary<NSString*, DatabaseAttachment*> *workingAttachments;
 @property BOOL dirty;
 
 @end
@@ -29,10 +34,7 @@
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    
-    self.tableView.emptyDataSetSource = self;
-    self.tableView.emptyDataSetDelegate = self;
-    
+        
     self.tableView.tableFooterView = [UIView new];
     
     self.tableView.rowHeight = 55.0f;
@@ -68,9 +70,8 @@
     [self dismissViewControllerAnimated:YES completion:nil];
 }
 
-- (NSAttributedString *)titleForEmptyDataSet:(UIScrollView *)scrollView
-{
-    NSString *text = @"No Attachments";
+- (NSAttributedString *)getTitleForEmptyDataSet {
+    NSString *text = NSLocalizedString(@"file_attachments_view_controller_empty_attachments_text", @"No Attachments");
     
     NSDictionary *attributes = @{NSFontAttributeName: [UIFont boldSystemFontOfSize:18.0f],
                                  NSForegroundColorAttributeName: [UIColor darkGrayColor]};
@@ -78,9 +79,9 @@
     return [[NSAttributedString alloc] initWithString:text attributes:attributes];
 }
 
-- (NSAttributedString *)descriptionForEmptyDataSet:(UIScrollView *)scrollView
+- (NSAttributedString *)getDescriptionForEmptyDataSet
 {
-    NSString *text = @"Tap the + button in the top right corner to add an attachment";
+    NSString *text = NSLocalizedString(@"file_attachments_view_controller_empty_attachments_description", @"Tap the + button in the top right corner to add an attachment");
     
     NSMutableParagraphStyle *paragraph = [NSMutableParagraphStyle new];
     paragraph.lineBreakMode = NSLineBreakByWordWrapping;
@@ -98,11 +99,15 @@
         return @[];
     }
     
-    UITableViewRowAction *removeAction = [UITableViewRowAction rowActionWithStyle:UITableViewRowActionStyleDestructive title:@"Remove" handler:^(UITableViewRowAction * _Nonnull action, NSIndexPath * _Nonnull indexPath) {
+    UITableViewRowAction *removeAction = [UITableViewRowAction rowActionWithStyle:UITableViewRowActionStyleDestructive
+                                                                            title:NSLocalizedString(@"generic_remove", @"Remove")
+                                                                          handler:^(UITableViewRowAction * _Nonnull action, NSIndexPath * _Nonnull indexPath) {
         [self removeAttachment:indexPath];
     }];
     
-    UITableViewRowAction *renameAction = [UITableViewRowAction rowActionWithStyle:UITableViewRowActionStyleNormal title:@"Rename" handler:^(UITableViewRowAction * _Nonnull action, NSIndexPath * _Nonnull indexPath) {
+    UITableViewRowAction *renameAction = [UITableViewRowAction rowActionWithStyle:UITableViewRowActionStyleNormal
+                                                                            title:NSLocalizedString(@"casg_rename_action", @"Rename")
+                                                                          handler:^(UITableViewRowAction * _Nonnull action, NSIndexPath * _Nonnull indexPath) {
         [self renameAttachment:indexPath];
     }];
     
@@ -110,10 +115,29 @@
 }
 
 - (void)removeAttachment:(NSIndexPath*)indexPath {
+    NSString* filename = self.workingAttachments.allKeys[indexPath.row];
+    
     [Alerts yesNo:self title:@"Are you sure?" message:@"Are you sure you want to remove this attachment?" action:^(BOOL response) {
         if(response) {
-            UiAttachment* attachment = [self.workingAttachments objectAtIndex:indexPath.row];
-            [self.workingAttachments removeObject:attachment];
+            [self.workingAttachments removeObjectForKey:filename];
+            self.dirty = YES;
+            [self refresh];
+        }
+    }];
+}
+
+- (void)renameAttachment:(NSIndexPath*)indexPath { 
+    NSString* filename = self.workingAttachments.allKeys[indexPath.row];
+    DatabaseAttachment* attachment = self.workingAttachments[filename];
+    
+    Alerts *x = [[Alerts alloc] initWithTitle:@"Filename" message:@"Enter a filename for this item"];
+    
+    [x OkCancelWithTextFieldNotEmpty:self
+                        textFieldText:filename
+                       completion:^(NSString *text, BOOL response) {
+        if(response) {
+            self.workingAttachments[text] = attachment;
+            [self.workingAttachments removeObjectForKey:filename];
             
             self.dirty = YES;
             [self refresh];
@@ -121,41 +145,18 @@
     }];
 }
 
-- (void)renameAttachment:(NSIndexPath*)indexPath {
-    UiAttachment* attachment = [self.workingAttachments objectAtIndex:indexPath.row];
-
-    Alerts *x = [[Alerts alloc] initWithTitle:@"Filename" message:@"Enter a filename for this item"];
-    
-    [x OkCancelWithTextFieldNotEmpty:self
-                        textFieldText:attachment.filename
-                       completion:^(NSString *text, BOOL response) {
-        if(response) {
-            attachment.filename = text;
-            self.dirty = YES;
-            [self refresh];
-        }
-    }];
-}
-
 - (IBAction)onAddAttachment:(id)sender {
-    NSArray* usedFilenames = [self.workingAttachments map:^id _Nonnull(UiAttachment * _Nonnull obj, NSUInteger idx) {
-        return obj.filename;
-    }];
+    NSArray* usedFilenames = self.workingAttachments.allKeys;
     
-    [AddAttachmentHelper.sharedInstance beginAddAttachmentUi:self usedFilenames:usedFilenames onAdd:^(UiAttachment * _Nonnull attachment) {
-        [self.workingAttachments addObject:attachment];
+    [AddAttachmentHelper.sharedInstance beginAddAttachmentUi:self usedFilenames:usedFilenames onAdd:^(NSString * _Nonnull filename, DatabaseAttachment * _Nonnull databaseAttachment) {
+        self.workingAttachments[filename] = databaseAttachment;
         self.dirty = YES;
         [self refresh];
     }];
 }
 
 - (void)previewControllerDidDismiss:(QLPreviewController *)controller {
-    NSArray* tmpDirectory = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:NSTemporaryDirectory() error:NULL];
-    for (NSString *file in tmpDirectory) {
-        NSString* path = [NSString pathWithComponents:@[NSTemporaryDirectory(), file]];
-        
-        [[NSFileManager defaultManager] removeItemAtPath:path error:NULL];
-    }
+    [FileManager.sharedInstance deleteAllTmpAttachmentPreviewFiles];
 }
 
 - (NSInteger)numberOfPreviewItemsInPreviewController:(QLPreviewController *)controller {
@@ -163,10 +164,19 @@
 }
 
 - (id <QLPreviewItem>)previewController:(QLPreviewController *)controller previewItemAtIndex:(NSInteger)index {
-    UiAttachment* attachment = [self.workingAttachments objectAtIndex:index];
+    NSString* filename = self.workingAttachments.allKeys[index];
+    DatabaseAttachment* attachment = self.workingAttachments[filename];
+   
+    NSString* f = [FileManager.sharedInstance.tmpAttachmentPreviewPath stringByAppendingPathComponent:filename];
     
-    NSString* f = [NSTemporaryDirectory() stringByAppendingPathComponent:attachment.filename];
-    [attachment.data writeToFile:f atomically:YES];
+    NSInputStream* inputStream = [attachment getPlainTextInputStream];
+
+    NSOutputStream* os = [NSOutputStream outputStreamToFileAtPath:f append:NO];
+    
+    if (![StreamUtils pipeFromStream:inputStream to:os]) {
+        return nil;
+    }
+    
     NSURL* url = [NSURL fileURLWithPath:f];
    
     return url;
@@ -175,31 +185,42 @@
 #pragma mark - Table view data source
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    if (self.workingAttachments.count == 0) {
+        [self.tableView setEmptyTitle:[self getTitleForEmptyDataSet] description:[self getDescriptionForEmptyDataSet]];
+
+    }
+    else {
+        [self.tableView setEmptyTitle:nil];
+    }
+
     return self.workingAttachments.count;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"FileAttachmentReuseIdentifier" forIndexPath:indexPath];
     
-    UiAttachment* attachment = [self.workingAttachments objectAtIndex:indexPath.row];
+    NSString* filename = self.workingAttachments.allKeys[indexPath.row];
+    DatabaseAttachment* attachment = self.workingAttachments[filename];
     
-    cell.textLabel.text = attachment.filename;
-    cell.detailTextLabel.text = friendlyFileSizeString(attachment.data.length);
-    
-    UIImage* img = [UIImage imageWithData:attachment.data];
-    if(img) {
-        @autoreleasepool { // Prevent App Extension Crash
-            UIGraphicsBeginImageContextWithOptions(cell.imageView.bounds.size, NO, 0.0);
-            
-            CGRect imageRect = cell.imageView.bounds;
-            [img drawInRect:imageRect];
-            cell.imageView.image = UIGraphicsGetImageFromCurrentImageContext();
-            
-            UIGraphicsEndImageContext();
+    cell.textLabel.text = filename;
+    cell.detailTextLabel.text = friendlyFileSizeString(attachment.length);
+    cell.imageView.image = [UIImage imageNamed:@"document"];
+
+    if (attachment.length < kMaxAttachmentTableviewIconImageSize) {
+        NSData* data = attachment.nonPerformantFullData; 
+        UIImage* img = [UIImage imageWithData:data];
+
+        if(img) {
+            @autoreleasepool { 
+                UIGraphicsBeginImageContextWithOptions(cell.imageView.bounds.size, NO, 0.0);
+                
+                CGRect imageRect = cell.imageView.bounds;
+                [img drawInRect:imageRect];
+                cell.imageView.image = UIGraphicsGetImageFromCurrentImageContext();
+                
+                UIGraphicsEndImageContext();
+            }
         }
-    }
-    else {
-        cell.imageView.image = [UIImage imageNamed:@"document"];
     }
     
     return cell;

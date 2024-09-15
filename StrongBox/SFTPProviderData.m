@@ -3,16 +3,25 @@
 //  Strongbox
 //
 //  Created by Mark on 11/12/2018.
-//  Copyright © 2018 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import "SFTPProviderData.h"
 
+@interface SFTPProviderData ()
+
+@end
+
 @implementation SFTPProviderData
 
--(NSDictionary *)serializationDictionary {
-    NSMutableDictionary *dict = [NSMutableDictionary dictionaryWithDictionary:[self.sFtpConfiguration serializationDictionary]];
+- (NSDictionary *)serializationDictionary {
+    NSMutableDictionary *dict = [NSMutableDictionary dictionary];
+    
     [dict setObject:self.filePath forKey:@"filePath"];
+    
+    if ( self.connectionIdentifier ) {
+        dict[@"connectionIdentifier"] = self.connectionIdentifier;
+    }
     
     return dict;
 }
@@ -21,7 +30,10 @@
     SFTPProviderData *pd = [[SFTPProviderData alloc] init];
     
     pd.filePath = [dictionary objectForKey:@"filePath"];
-    pd.sFtpConfiguration = [SFTPSessionConfiguration fromSerializationDictionary:dictionary];
+        
+    if ( dictionary[@"connectionIdentifier"] ) {
+        pd.connectionIdentifier = dictionary[@"connectionIdentifier"];
+    }
     
     return pd;
 }

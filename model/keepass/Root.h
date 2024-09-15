@@ -3,11 +3,12 @@
 //  Strongbox
 //
 //  Created by Mark on 20/10/2018.
-//  Copyright © 2018 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import "BaseXmlDomainObjectHandler.h"
 #import "KeePassGroup.h"
+#import "DeletedObjects.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -17,6 +18,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithDefaultsAndInstantiatedChildren:(XmlProcessingContext*)context;
 
 @property (nonatomic) KeePassGroup* rootGroup;
+@property (nonatomic) DeletedObjects *deletedObjects;
 
 @end
 

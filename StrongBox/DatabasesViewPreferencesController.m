@@ -3,11 +3,12 @@
 //  Strongbox-iOS
 //
 //  Created by Mark on 30/07/2019.
-//  Copyright © 2019 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import "DatabasesViewPreferencesController.h"
-#import "Settings.h"
+//#import "Settings.h"
+#import "AppPreferences.h"
 #import "SelectItemTableViewController.h"
 #import "NSArray+Extensions.h"
 
@@ -33,19 +34,19 @@
 }
 
 - (void)bindUi {
-    self.switchShowStorageIcon.on = Settings.sharedInstance.showDatabaseIcon;
-    self.showStatusIndicator.on = Settings.sharedInstance.showDatabaseStatusIcon;
-    self.showSeparator.on = Settings.sharedInstance.showDatabasesSeparator;
+    self.switchShowStorageIcon.on = AppPreferences.sharedInstance.showDatabaseIcon;
+    self.showStatusIndicator.on = AppPreferences.sharedInstance.showDatabaseStatusIcon;
+    self.showSeparator.on = AppPreferences.sharedInstance.showDatabasesSeparator;
     
-    self.labelTopRight.text = [self getDatabaseSubtitleFieldName:Settings.sharedInstance.databaseCellTopSubtitle];
-    self.labelSubtitle1.text = [self getDatabaseSubtitleFieldName:Settings.sharedInstance.databaseCellSubtitle1];
-    self.labelSubtitle2.text = [self getDatabaseSubtitleFieldName:Settings.sharedInstance.databaseCellSubtitle2];
+    self.labelTopRight.text = [self getDatabaseSubtitleFieldName:AppPreferences.sharedInstance.databaseCellTopSubtitle];
+    self.labelSubtitle1.text = [self getDatabaseSubtitleFieldName:AppPreferences.sharedInstance.databaseCellSubtitle1];
+    self.labelSubtitle2.text = [self getDatabaseSubtitleFieldName:AppPreferences.sharedInstance.databaseCellSubtitle2];
 }
 
 - (IBAction)onSettingChanged:(id)sender {
-    Settings.sharedInstance.showDatabaseIcon = self.switchShowStorageIcon.on;
-    Settings.sharedInstance.showDatabaseStatusIcon = self.showStatusIndicator.on;
-    Settings.sharedInstance.showDatabasesSeparator = self.showSeparator.on;
+    AppPreferences.sharedInstance.showDatabaseIcon = self.switchShowStorageIcon.on;
+    AppPreferences.sharedInstance.showDatabaseStatusIcon = self.showStatusIndicator.on;
+    AppPreferences.sharedInstance.showDatabasesSeparator = self.showSeparator.on;
     
     if(self.onPreferencesChanged) {
         self.onPreferencesChanged();
@@ -64,7 +65,12 @@
     NSArray<NSNumber*>* opts = @[@(kDatabaseCellSubtitleFieldNone),
       @(kDatabaseCellSubtitleFieldFileName),
       @(kDatabaseCellSubtitleFieldStorage),
-      @(kDatabaseCellSubtitleFieldLastCachedDate)] ;
+      @(kDatabaseCellSubtitleFieldLastModifiedDate),
+      @(kDatabaseCellSubtitleFieldLastModifiedDatePrecise),
+      @(kDatabaseCellSubtitleFieldFileSize),
+
+
+    ];
     
     NSArray<NSString*>* options = [opts map:^id _Nonnull(NSNumber*  _Nonnull obj, NSUInteger idx) {
         return [self getDatabaseSubtitleFieldName:obj.integerValue];
@@ -73,10 +79,10 @@
     if (cell == self.cellTopRight) {
         [self promptForString:NSLocalizedString(@"databases_preferences_select_top_right_field", @"Select Top Right Field")
                       options:options
-                 currentIndex:Settings.sharedInstance.databaseCellTopSubtitle
+                 currentIndex:AppPreferences.sharedInstance.databaseCellTopSubtitle
                    completion:^(BOOL success, NSInteger selectedIdx) {
                        if(success) {
-                           Settings.sharedInstance.databaseCellTopSubtitle = selectedIdx;
+                           AppPreferences.sharedInstance.databaseCellTopSubtitle = selectedIdx;
                            [self onSettingChanged:nil];
                        }
                    }];
@@ -84,10 +90,10 @@
     else if (cell == self.cellSubtitle1) {
         [self promptForString:NSLocalizedString(@"databases_preferences_select_subtitle1_field", @"Select Subtitle 1 Field")
                       options:options
-                 currentIndex:Settings.sharedInstance.databaseCellSubtitle1
+                 currentIndex:AppPreferences.sharedInstance.databaseCellSubtitle1
                    completion:^(BOOL success, NSInteger selectedIdx) {
                        if(success) {
-                           Settings.sharedInstance.databaseCellSubtitle1 = selectedIdx;
+                           AppPreferences.sharedInstance.databaseCellSubtitle1 = selectedIdx;
                            [self onSettingChanged:nil];
                        }
                    }];
@@ -95,10 +101,10 @@
     else if (cell == self.cellSubtitle2) {
         [self promptForString:NSLocalizedString(@"databases_preferences_select_subtitle2_field", @"Select Subtitle 2 Field")
                       options:options
-                 currentIndex:Settings.sharedInstance.databaseCellSubtitle2
+                 currentIndex:AppPreferences.sharedInstance.databaseCellSubtitle2
                    completion:^(BOOL success, NSInteger selectedIdx) {
                        if(success) {
-                           Settings.sharedInstance.databaseCellSubtitle2 = selectedIdx;
+                           AppPreferences.sharedInstance.databaseCellSubtitle2 = selectedIdx;
                            [self onSettingChanged:nil];
                        }
                    }];
@@ -115,11 +121,23 @@
         case kDatabaseCellSubtitleFieldFileName:
             return NSLocalizedString(@"databases_preferences_subtitle_field_name_filename", @"Filename");
             break;
-        case kDatabaseCellSubtitleFieldLastCachedDate:
-            return NSLocalizedString(@"databases_preferences_subtitle_field_name_last_cached_data", @"Last Cached Date");
+        case kDatabaseCellSubtitleFieldLastModifiedDate:
+            return NSLocalizedString(@"databases_preferences_subtitle_field_name_last_cached_data", @"Last Modified");
+            break;
+        case kDatabaseCellSubtitleFieldLastModifiedDatePrecise:
+            return NSLocalizedString(@"databases_preferences_subtitle_field_name_last_modified_date_precise", @"Last Modified (Precise)");
+            break;
+        case kDatabaseCellSubtitleFieldFileSize:
+            return NSLocalizedString(@"databases_preferences_subtitle_field_name_file_size", @"File Size");
             break;
         case kDatabaseCellSubtitleFieldStorage:
             return NSLocalizedString(@"databases_preferences_subtitle_field_name_database_storage", @"Database Storage");
+            break;
+        case kDatabaseCellSubtitleFieldCreateDate:
+            return NSLocalizedString(@"browse_prefs_item_subtitle_date_created", @"Date Created");
+            break;
+        case kDatabaseCellSubtitleFieldCreateDatePrecise:
+            return NSLocalizedString(@"databases_preferences_subtitle_field_name_create_date_precise", @"Date Created (Precise)");
             break;
         default:
             return @"<Unknown Field>";
@@ -135,11 +153,13 @@
     UINavigationController* nav = (UINavigationController*)[storyboard instantiateInitialViewController];
     SelectItemTableViewController *vc = (SelectItemTableViewController*)nav.topViewController;
     
-    vc.items = options;
-    vc.selected = [NSIndexSet indexSetWithIndex:currentIndex];
-    vc.onSelectionChanged = ^(NSIndexSet * _Nonnull selectedIndices) {
+    vc.groupItems = @[options];
+    vc.selectedIndexPaths = @[[NSIndexSet indexSetWithIndex:currentIndex]];
+    vc.onSelectionChange = ^(NSArray<NSIndexSet *> * _Nonnull selectedIndices) {
         [self.navigationController popViewControllerAnimated:YES];
-        completion(YES, selectedIndices.firstIndex);
+        
+        NSIndexSet* set = selectedIndices.firstObject;
+        completion(YES, set.firstIndex);
     };
     vc.title = title;
     

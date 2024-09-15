@@ -3,12 +3,13 @@
 //  Strongbox
 //
 //  Created by Mark on 30/10/2018.
-//  Copyright © 2018 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import <Foundation/Foundation.h>
 #import "KdfParameters.h"
-#import "DatabaseAttachment.h"
+#import "KeePassAttachmentAbstractionLayer.h"
+#import "RootXmlDomainObject.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -19,10 +20,10 @@ NS_ASSUME_NONNULL_BEGIN
 @property uint32_t innerRandomStreamId;
 @property (nullable) NSData* innerRandomStreamKey;
 @property NSDictionary<NSNumber*, NSObject*> *extraUnknownHeaders;
-@property NSString* xml;
 @property KdfParameters *kdfParameters;
 @property NSUUID* cipherUuid;
-@property NSArray<DatabaseAttachment*>* attachments;
+@property NSArray<KeePassAttachmentAbstractionLayer*>* attachments;
+@property RootXmlDomainObject* rootXmlObject;
 
 @end
 

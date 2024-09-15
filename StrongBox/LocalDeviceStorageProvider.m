@@ -9,18 +9,17 @@
 #import "LocalDeviceStorageProvider.h"
 #import "IOsUtils.h"
 #import "Utils.h"
-#import "SafesList.h"
-#import "Settings.h"
+#import "DatabasePreferences.h"
 #import "DatabaseModel.h"
-#import "FileManager.h"
+#import "StrongboxiOSFilesManager.h"
 #import "LocalDatabaseIdentifier.h"
+#import "NSDate+Extensions.h"
 
-@interface LocalDeviceStorageProvider ()
-
-@property (nonatomic, strong) dispatch_queue_t dispatchQueue;
-@property (nonatomic, strong) dispatch_source_t source;
-
-@end
+#ifndef IS_APP_EXTENSION
+#import "Strongbox-Swift.h"
+#else
+#import "Strongbox_Auto_Fill-Swift.h"
+#endif
 
 @implementation LocalDeviceStorageProvider
 
@@ -36,14 +35,14 @@
 
 - (instancetype)init {
     if (self = [super init]) {
-        _displayName = @"Local Device";
-        _icon = @"iphone_x";
         _storageId = kLocalDevice;
-        _allowOfflineCache = NO;
         _providesIcons = NO;
         _browsableNew = NO;
         _browsableExisting = YES;
         _rootFolderOnly = YES;
+        _defaultForImmediatelyOfferOfflineCache = NO;
+        _supportsConcurrentRequests = NO;
+        
         return self;
     }
     else {
@@ -51,65 +50,87 @@
     }
 }
 
-- (void)    create:(NSString *)nickName
-         extension:(NSString *)extension
-              data:(NSData *)data
-      parentFolder:(NSObject *)parentFolder
-    viewController:(UIViewController *)viewController
-        completion:(void (^)(SafeMetaData *metadata, NSError *error))completion {
-    NSString *desiredFilename = [NSString stringWithFormat:@"%@.%@", nickName, extension];
-    [self create:nickName extension:extension data:data suggestedFilename:desiredFilename completion:completion];
+- (void)create:(NSString *)nickName
+      fileName:(NSString *)fileName
+          data:(NSData *)data
+  parentFolder:(NSObject *)parentFolder
+viewController:(VIEW_CONTROLLER_PTR)viewController
+    completion:(void (^)(METADATA_PTR _Nullable, const NSError * _Nullable))completion {
+    [self create:nickName fileName:fileName data:data modDate:NSDate.date completion:completion];
 }
 
-- (void)        create:(NSString *)nickName
-             extension:(NSString *)extension
-                  data:(NSData *)data
-     suggestedFilename:(NSString*)suggestedFilename
-            completion:(void (^)(SafeMetaData *metadata, NSError *error))completion {
-    // Is the suggested a valid file name?
-    // YES -> Does it exist
-    //     Yes -> Are we allow to overwrite
-    //        Yes -> Overwirte
-    //        No -> Come up with new File Name and Write
-    //     No -> Write
-    // NO -> Come up with new File Name and Write
-    
-    if(![self writeToDefaultStorageWithFilename:suggestedFilename overwrite:NO data:data]) {
-        suggestedFilename = [NSString stringWithFormat:@"%@.%@", nickName, extension];
-        while(![self writeToDefaultStorageWithFilename:suggestedFilename overwrite:NO data:data]) {
-            suggestedFilename = [Utils insertTimestampInFilename:suggestedFilename];
+- (void)create:(NSString *)nickName
+      fileName:(NSString *)fileName
+          data:(NSData *)data
+       modDate:(NSDate*)modDate
+    completion:(void (^)(METADATA_PTR _Nullable, const NSError * _Nullable))completion {
+    if(![self writeToDefaultStorageWithFilename:fileName overwrite:NO data:data modDate:modDate]) {
+        fileName = [Utils insertTimestampInFilename:fileName];
+        
+        while(![self writeToDefaultStorageWithFilename:fileName overwrite:NO data:data modDate:modDate]) {
+            fileName = [Utils insertTimestampInFilename:fileName];
         }
     }
     
     LocalDatabaseIdentifier *identifier = [[LocalDatabaseIdentifier alloc] init];
-    identifier.filename = suggestedFilename;
-    identifier.sharedStorage = Settings.sharedInstance.useLocalSharedStorage;
+    identifier.filename = fileName;
+    identifier.sharedStorage = YES;
     
-    SafeMetaData *metadata = [self getSafeMetaData:nickName providerData:identifier];
+    DatabasePreferences *metadata = [self getDatabasePreferences:nickName providerData:identifier];
+    
     completion(metadata, nil);
 }
 
-- (BOOL)writeToDefaultStorageWithFilename:(NSString*)filename overwrite:(BOOL)overwrite data:(NSData *)data {
-    NSLog(@"Trying to write local file with filename [%@]", filename);
+- (BOOL)writeToDefaultStorageWithFilename:(NSString*)filename overwrite:(BOOL)overwrite data:(NSData *)data modDate:(NSDate*_Nullable)modDate {
+    slog(@"Trying to write local file with filename [%@]", filename);
     NSString *path = [self getDefaultStorageFileUrl:filename].path;
-
-    // Does it exist?
     
+    return [self writeToPath:path overwrite:overwrite data:data modDate:modDate];
+}
+
+- (BOOL)writeToDocumentsWithFilename:(NSString *)filename overwrite:(BOOL)overwrite data:(NSData *)data modDate:(NSDate *)modDate {
+    slog(@"Trying to write local file with filename [%@]", filename);
+    NSString *path = [self getDocumentsFileUrl:filename].path;
+    
+    return [self writeToPath:path overwrite:overwrite data:data modDate:modDate];
+}
+
+- (BOOL)writeToPath:(NSString*)path overwrite:(BOOL)overwrite data:(NSData *)data modDate:(NSDate*_Nullable)modDate {
+    
+    
+    BOOL ret;
     if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
-        //     Yes -> Are we allow to overwrite
+        
         if(overwrite) {
-            //        Yes -> Write
-            return [self write:data path:path overwrite:overwrite];
+            
+            ret = [self write:data path:path overwrite:overwrite];
         }
         else {
-            //        No -> Come up with new File Name and Write
-            NSLog(@"File [%@] but not allowed to overwrite...", filename);
-            return NO;
+            
+            slog(@"File [%@] but not allowed to overwrite...", path);
+            ret = NO;
         }
     }
     else {
-        // No -> Write
-        return [self write:data path:path overwrite:overwrite];
+        
+        ret = [self write:data path:path overwrite:overwrite];
+    }
+    
+    if ( !ret ) {
+        return NO;
+    }
+    else {
+        if ( modDate ) {
+            NSError* err2;
+            [NSFileManager.defaultManager setAttributes:@{ NSFileModificationDate : modDate }
+                                           ofItemAtPath:path
+                                                  error:&err2];
+            if ( err2 ) {
+                slog(@"WARNWARN: writeToDefaultStorageWithFilename -> could not set mod date: [%@]", err2);
+            }
+        }
+        
+        return YES;
     }
 }
 
@@ -121,238 +142,120 @@
     }
     
     BOOL ret = [data writeToFile:path options:flags error:&error];
-
+    
     if(!ret) {
-        NSLog(@"tryWrite Failed: [%@]", error);
+        slog(@"tryWrite Failed: [%@]", error);
     }
     
     return ret;
 }
 
-- (void)read:(SafeMetaData *)safeMetaData viewController:(UIViewController *)viewController isAutoFill:(BOOL)isAutoFill completion:(void (^)(NSData * _Nullable, NSError * _Nullable))completion {
-    NSURL *url = [self getFileUrl:safeMetaData];
-
-    NSLog(@"Local Reading at: %@", url);
-
-    NSData *data = [[NSFileManager defaultManager] contentsAtPath:url.path];
-
-    completion(data, nil);
-}
-
-- (void)update:(SafeMetaData *)safeMetaData data:(NSData *)data isAutoFill:(BOOL)isAutoFill completion:(void (^)(NSError * _Nullable))completion {
+- (void)pushDatabase:(DatabasePreferences *)safeMetaData interactiveVC:(UIViewController *)viewController data:(NSData *)data completion:(StorageProviderUpdateCompletionBlock)completion {
     NSURL* url = [self getFileUrl:safeMetaData];
-
-    [data writeToFile:url.path atomically:YES];
-
-    completion(nil);
+    
+    NSError* error;
+    BOOL success = [data writeToFile:url.path options:NSDataWritingAtomic error:&error];
+    if (success) {
+        NSDictionary* attr = [NSFileManager.defaultManager attributesOfItemAtPath:url.path error:&error];
+        if (error) {
+            completion(kUpdateResultError, nil, error);
+        }
+        else {
+            completion(kUpdateResultSuccess, attr.fileModificationDate, nil);
+        }
+    }
+    else {
+        completion(kUpdateResultError, nil, error);
+    }
 }
 
-
-- (void)delete:(SafeMetaData *)safeMetaData completion:(void (^)(NSError *error))completion {
+- (void)delete:(DatabasePreferences *)safeMetaData completion:(void (^)(NSError *error))completion {
     NSURL *url = [self getFileUrl:safeMetaData];
-
-    NSError *error;
-
-    [[NSFileManager defaultManager] removeItemAtPath:url.path error:&error];
-
-    if(completion != nil) {
-        completion(error);
+    
+    if ( [NSFileManager.defaultManager fileExistsAtPath:url.path] ) {
+        NSError *error;
+        
+        [[NSFileManager defaultManager] removeItemAtPath:url.path error:&error];
+        
+        if(completion != nil) {
+            completion(error);
+        }
+    }
+    else {
+        if(completion != nil) {
+            completion(nil);
+        }
     }
 }
 
 - (void)loadIcon:(NSObject *)providerData viewController:(UIViewController *)viewController
       completion:(void (^)(UIImage *image))completionHandler {
-    // NOTIMPL
+    
 }
 
 - (void)      list:(NSObject *)parentFolder
     viewController:(UIViewController *)viewController
-        completion:(void (^)(BOOL, NSArray<StorageBrowserItem *> *, NSError *))completion {
-    // NOTIMPL
+        completion:(void (^)(BOOL, NSArray<StorageBrowserItem *> *, const NSError *))completion {
+    
 }
 
-- (void)readWithProviderData:(NSObject *)providerData
-              viewController:(UIViewController *)viewController
-                  completion:(void (^)(NSData *data, NSError *error))completionHandler {
-    // NOTIMPL
+- (void)readWithProviderData:(NSObject *)providerData viewController:(UIViewController *)viewController options:(StorageProviderReadOptions *)options completion:(StorageProviderReadCompletionBlock)completionHandler {
+    
 }
 
-- (SafeMetaData *)getSafeMetaData:(NSString *)nickName providerData:(NSObject *)providerData {
+- (DatabasePreferences *)getDatabasePreferences:(NSString *)nickName providerData:(NSObject *)providerData {
     LocalDatabaseIdentifier* identifier = (LocalDatabaseIdentifier*)providerData;
     
-    return [[SafeMetaData alloc] initWithNickName:nickName
-                                  storageProvider:self.storageId
-                                         fileName:identifier.filename
-                                   fileIdentifier:[identifier toJson]];
+    return [DatabasePreferences templateDummyWithNickName:nickName
+                                          storageProvider:self.storageId
+                                                 fileName:identifier.filename
+                                           fileIdentifier:[identifier toJson]];
 }
 
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-- (void)startMonitoringDocumentsDirectory
-{
-#define fileChangedNotification @"fileChangedNotification"
+- (void)pullDatabase:(DatabasePreferences *)safeMetaData
+       interactiveVC:(UIViewController *)viewController
+             options:(StorageProviderReadOptions *)options
+          completion:(StorageProviderReadCompletionBlock)completion {
+    NSURL *url = [self getFileUrl:safeMetaData];
     
-    // Get the path to the home directory
-    NSString * homeDirectory = FileManager.sharedInstance.documentsDirectory.path;
-    
-    // Create a new file descriptor - we need to convert the NSString to a char * i.e. C style string
-    int filedes = open([homeDirectory cStringUsingEncoding:NSASCIIStringEncoding], O_EVTONLY);
-    
-    // Create a dispatch queue - when a file changes the event will be sent to this queue
-    _dispatchQueue = dispatch_queue_create("FileMonitorQueue", 0);
-    
-    // Create a GCD source. This will monitor the file descriptor to see if a write command is detected
-    // The following options are available
-    
-    // Write covers - adding a file, renaming a file and deleting a file...
-    _source = dispatch_source_create(DISPATCH_SOURCE_TYPE_VNODE,filedes,
-                                     DISPATCH_VNODE_WRITE,
-                                     _dispatchQueue);
-    
-    // This block will be called when teh file changes
-    dispatch_source_set_event_handler(_source, ^(){
-        // We call an NSNotification so the file can change can be detected anywhere
-        [[NSNotificationCenter defaultCenter] postNotificationName:fileChangedNotification object:Nil];
-    });
-    
-    // When we stop monitoring the file this will be called and it will close the file descriptor
-    dispatch_source_set_cancel_handler(_source, ^() {
-        close(filedes);
-    });
-    
-    // Start monitoring the file...
-    dispatch_resume(_source);
-    
-    // To recieve a notification about the file change we can use the NSNotificationCenter
-    [[NSNotificationCenter defaultCenter] addObserverForName:fileChangedNotification object:Nil queue:Nil usingBlock:^(NSNotification * notification) {
-        dispatch_async(dispatch_get_main_queue(), ^(void) {
-            NSLog(@"File Change Detected! Scanning for New Safes");
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-                [self syncLocalSafesWithFileSystem];
-            });
-        });
-    }];
-    
-    [self syncLocalSafesWithFileSystem];
-}
-
-- (void)stopMonitoringDocumentsDirectory {
-    dispatch_source_cancel(_source);
-}
-
-- (NSArray<StorageBrowserItem *>*)scanForNewDatabases {
-    NSArray<SafeMetaData*> * localSafes = [SafesList.sharedInstance getSafesOfProvider:kLocalDevice];
-    NSMutableSet *existing = [NSMutableSet set];
-    for (SafeMetaData* safe in localSafes) {
-        LocalDatabaseIdentifier* identifier = [self getIdentifierFromMetadata:safe];
-        if(!identifier.sharedStorage) {
-            [existing addObject:identifier.filename];
-        }
-    }
+    slog(@"Local Reading at: %@", url);
     
     NSError* error;
-    NSArray<StorageBrowserItem *> *items = [self getDocumentFiles:&error];
-    NSMutableArray<StorageBrowserItem *> *newSafes = [NSMutableArray array];
-    
-    if(items) {
-        for (StorageBrowserItem *item in items) {
-            if(!item.folder && ![existing containsObject:item.name]) {
-                NSString *path = [self getFileUrl:NO filename:item.name].path;
-                
-                NSData *data = [[NSFileManager defaultManager] contentsAtPath:path];
-                
-                if([DatabaseModel isAValidSafe:data error:&error]) {
-                    NSLog(@"New File:%@ is a valid safe", item.name);
-                    [newSafes addObject:item];
-                }
-                else {
-                    //NSLog(@"None Safe File:%@ is a not valid safe", item.name);
-                }
-            }
-        }
-    }
-    else {
-        NSLog(@"Error Scanning for New Files. List Root: %@", error);
-    }
-    
-    return newSafes;
-}
-
-- (NSArray<StorageBrowserItem*>*)getDocumentFiles:(NSError**)ppError {
-    NSError *error;
-    NSArray *directoryContent = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:FileManager.sharedInstance.documentsDirectory.path
-                                                                                    error:&error];
+    NSDictionary* attributes = [NSFileManager.defaultManager attributesOfItemAtPath:url.path error:&error];
     
     if (error) {
-        *ppError = error;
-        return nil;
+        slog(@"Error = [%@]", error);
+        completion(kReadResultError, nil, nil, error);
     }
-    
-    NSMutableArray<StorageBrowserItem*>* items = [NSMutableArray array];
-    for (NSString* file in directoryContent)
-    {
-        StorageBrowserItem* browserItem = [[StorageBrowserItem alloc] init];
-        
-        BOOL isDirectory;
-        NSString *fullPath = [self getFileUrl:NO filename:file].path;
-        
-        BOOL exists = [[NSFileManager defaultManager] fileExistsAtPath:fullPath isDirectory:&isDirectory];
-        
-        if(exists) {
-            browserItem.folder = isDirectory != 0;
-            browserItem.name = file;
-            
-            LocalDatabaseIdentifier *identifier = [[LocalDatabaseIdentifier alloc] init];
-            identifier.sharedStorage = NO;
-            identifier.filename = file;
-            
-            browserItem.providerData = identifier;
-            
-            [items addObject:browserItem];
+    else {
+        if (options.onlyIfModifiedDifferentFrom == nil || (![attributes.fileModificationDate isEqualToDateWithinEpsilon:options.onlyIfModifiedDifferentFrom] )) {
+            NSData *data = [[NSFileManager defaultManager] contentsAtPath:url.path];
+            completion(kReadResultSuccess, data, attributes.fileModificationDate, error);
         }
-    }
-    
-    return items;
-}
-
-- (void)syncLocalSafesWithFileSystem {
-    // Add any new
-    
-    NSArray<StorageBrowserItem*> *items = [self scanForNewDatabases];
-    
-    if(items.count) {
-        for(StorageBrowserItem* item in items) {
-            NSString* name = [SafesList sanitizeSafeNickName:[item.name stringByDeletingPathExtension]];
-            SafeMetaData *safe = [LocalDeviceStorageProvider.sharedInstance getSafeMetaData:name
-                                                                               providerData:item.providerData];
-            [[SafesList sharedInstance] addWithDuplicateCheck:safe];
-        }
-    }
-    
-    // Remove deleted
-    
-    NSArray<SafeMetaData*> *localSafes = [SafesList.sharedInstance getSafesOfProvider:kLocalDevice];
-    
-    for (SafeMetaData* localSafe in localSafes) {
-        if(![self fileExists:localSafe]) {
-            NSLog(@"Removing Safe [%@] because underlying file [%@] no longer exists in Documents Directory.", localSafe.nickName, localSafe.fileName);
-            [SafesList.sharedInstance remove:localSafe.uuid];
+        else {
+            completion(kReadResultModifiedIsSameAsLocal, nil, nil, nil);
         }
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////////////////////////////
+- (void)getModDate:(nonnull METADATA_PTR)safeMetaData completion:(nonnull StorageProviderGetModDateCompletionBlock)completion {
+    slog(@"🔴 LocalDeviceStorageProvider::getModDate not impl!"); 
+    
+    
+}
 
-- (LocalDatabaseIdentifier*)getIdentifierFromMetadata:(SafeMetaData*)metaData {
+
+
+- (LocalDatabaseIdentifier*)getIdentifierFromMetadata:(DatabasePreferences*)metaData {
     NSString* json = metaData.fileIdentifier;
     return [LocalDatabaseIdentifier fromJson:json];
 }
 
 - (NSURL*)getDirectory:(BOOL)shared {
-    return shared ? FileManager.sharedInstance.sharedAppGroupDirectory : FileManager.sharedInstance.documentsDirectory;
+    return shared ? StrongboxFilesManager.sharedInstance.sharedAppGroupDirectory : StrongboxFilesManager.sharedInstance.documentsDirectory;
 }
 
-- (NSURL*)getFileUrl:(SafeMetaData*)safeMetaData {
+- (NSURL*)getFileUrl:(DatabasePreferences*)safeMetaData {
     LocalDatabaseIdentifier* identifier = [self getIdentifierFromMetadata:safeMetaData];
     return [self getFileUrl:identifier.sharedStorage filename:identifier.filename];
 }
@@ -362,14 +265,19 @@
     return [folder URLByAppendingPathComponent:filename];
 }
 
-- (BOOL)fileExists:(SafeMetaData*)metaData {
-    NSURL *fullPath = [self getFileUrl:metaData];
-    return [[NSFileManager defaultManager] fileExistsAtPath:fullPath.path];
+- (NSURL*)getDefaultStorageFileUrl:(NSString*)filename {
+    NSURL* folder = [self getDirectory:YES];
+    return [folder URLByAppendingPathComponent:filename];
 }
 
-- (NSURL*)getDefaultStorageFileUrl:(NSString*)filename {
-    NSURL* folder = [self getDirectory:Settings.sharedInstance.useLocalSharedStorage];
+- (NSURL*)getDocumentsFileUrl:(NSString*)filename {
+    NSURL* folder = [self getDirectory:NO];
     return [folder URLByAppendingPathComponent:filename];
+}
+
+- (BOOL)fileNameExistsInDocumentsFolder:(NSString*)filename {
+    NSURL *fullPath = [self getDocumentsFileUrl:filename];
+    return [[NSFileManager defaultManager] fileExistsAtPath:fullPath.path];
 }
 
 - (BOOL)fileNameExistsInDefaultStorage:(NSString*)filename {
@@ -377,70 +285,52 @@
     return [[NSFileManager defaultManager] fileExistsAtPath:fullPath.path];
 }
 
-// NB: 17-Jun-2019
-- (void)migrateLocalDatabasesToNewSystem {
-    NSArray<SafeMetaData*>* locals = [SafesList.sharedInstance getSafesOfProvider:kLocalDevice];
-    
-    for (SafeMetaData* database in locals) {
-        NSLog(@"Migrating Local Database to new System: [%@]", database);
-        
-        LocalDatabaseIdentifier* identifier = [[LocalDatabaseIdentifier alloc] init];
-        
-        identifier.filename = database.fileIdentifier;
-        identifier.sharedStorage = NO;
-        
-        database.fileIdentifier = [identifier toJson];
-        
-        [SafesList.sharedInstance update:database];
-    }
-    
-    Settings.sharedInstance.migratedLocalDatabasesToNewSystem = YES;
-}
-
-- (BOOL)isUsingSharedStorage:(SafeMetaData*)metadata {
+- (BOOL)isUsingSharedStorage:(DatabasePreferences*)metadata {
     LocalDatabaseIdentifier* identifier = [self getIdentifierFromMetadata:metadata];
     return identifier.sharedStorage;
 }
 
-- (BOOL)toggleSharedStorage:(SafeMetaData*)metadata error:(NSError**)error {
-    LocalDatabaseIdentifier* identifier = [self getIdentifierFromMetadata:metadata];
-
-    NSURL* src = [self getFileUrl:identifier.sharedStorage filename:identifier.filename];
-    NSURL* dest = [self getFileUrl:!identifier.sharedStorage filename:identifier.filename];
-
-    int i=0;
-    NSString* extension = [identifier.filename pathExtension];
-    NSString* baseFileName = [identifier.filename stringByDeletingPathExtension];
+- (BOOL)renameFilename:(DatabasePreferences*)database filename:(NSString*)filename error:(NSError**)error {
+    NSURL* url = [self getFileUrl:database];
+    NSString* fullPath = url.absoluteURL.path;
+    NSString* oldExtension = fullPath.pathExtension;
     
-    // Avoid Race Conditions
+    NSString* stripped = [MMcGSwiftUtils stripInvalidFilenameCharacters:filename];
+    NSString* sanitisedFilename = [stripped stringByAppendingPathExtension:oldExtension ? oldExtension : @""];
     
-    [self stopMonitoringDocumentsDirectory];
+    NSString* baseDir = fullPath.stringByDeletingLastPathComponent;
+    NSString* newPath = [baseDir stringByAppendingPathComponent:sanitisedFilename];
     
-    while ([[NSFileManager defaultManager] fileExistsAtPath:dest.path]) {
-        identifier.filename = [[baseFileName stringByAppendingFormat:@"-%d", i] stringByAppendingPathExtension:extension];
+    if ( [NSFileManager.defaultManager fileExistsAtPath:newPath] ) {
+        slog(@"🔴 Problem renaming local file!");
         
-        dest = [self getFileUrl:!identifier.sharedStorage filename:identifier.filename];
+        if ( error ) {
+            *error = [Utils createNSError:NSLocalizedString(@"error_rename_file_already_exists", @"Cannot rename file as a file with that name already exists.") errorCode:-1234];
+        }
         
-        NSLog(@"File exists at destination... Trying: [%@]", dest);
-    }
-    
-    if(![NSFileManager.defaultManager moveItemAtURL:src toURL:dest error:error]) {
-        NSLog(@"Error moving local file: [%@]", *error);
-        [self startMonitoringDocumentsDirectory];
         return NO;
     }
-    else {
-        NSLog(@"OK - Moved local file: [%@] -> [%@]", src, dest);
+    
+    LocalDatabaseIdentifier* identifier = [self getIdentifierFromMetadata:database];
+    identifier.filename = sanitisedFilename;
+    
+    
+    
+    NSError* err;
+    if (! [NSFileManager.defaultManager moveItemAtPath:fullPath toPath:newPath error:&err] ) {
+        slog(@"🔴 Problem renaming local file! [%@]", err);
+        
+        if ( error ) {
+            *error = err;
+        }
+        
+        return NO;
     }
     
-    identifier.sharedStorage = !identifier.sharedStorage;
     
-    metadata.fileIdentifier = [identifier toJson];
-    metadata.fileName = identifier.filename;
     
-    [SafesList.sharedInstance update:metadata];
-    
-    [self startMonitoringDocumentsDirectory];
+    database.fileName = identifier.filename;
+    database.fileIdentifier = [identifier toJson];
     
     return YES;
 }

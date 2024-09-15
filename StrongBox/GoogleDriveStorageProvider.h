@@ -14,13 +14,13 @@
 
 + (instancetype)sharedInstance;
 
-@property (strong, nonatomic, readonly) NSString *displayName;
-@property (strong, nonatomic, readonly) NSString *icon;
 @property (nonatomic, readonly) StorageProvider storageId;
-@property (nonatomic, readonly) BOOL allowOfflineCache;
 @property (nonatomic, readonly) BOOL providesIcons;
 @property (nonatomic, readonly) BOOL browsableNew;
 @property (nonatomic, readonly) BOOL browsableExisting;
 @property (nonatomic, readonly) BOOL rootFolderOnly;
+@property (nonatomic, readonly) BOOL defaultForImmediatelyOfferOfflineCache;
+@property (nonatomic, readonly) BOOL supportsConcurrentRequests;
+@property (nonatomic, readonly) BOOL privacyOptInRequired;
 
 @end

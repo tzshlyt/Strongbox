@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+        <meta charset="utf-8">
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+        <style>
+            :root {
+                color-scheme: light dark;
+            }
+            
+            body {
+                margin: 0px;
+                padding: 0px;
+                font: -apple-system-body; /* H/T https://useyourloaf.com/blog/using-dynamic-type-with-web-views/ */
+            }
+            
+            .non-markdown-body {
+                box-sizing: border-box;
+                min-width: 200px;
+                max-width: 980px;
+                margin: 0 auto;
+                --color-canvas-default: transparent !important; /* Override the default style sheet below */
+                display: inline-block;
+            }
+            
+            p {
+                margin-top: 0;
+                margin-bottom: 10px; /* Required for correct sizing */
+            }
+        </style>
+    </head>
+    <body>
+        <article class="non-markdown-body">
+            %@
+        </article>
+    </body>
+</html>

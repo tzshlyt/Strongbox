@@ -3,11 +3,10 @@
 //  Strongbox-iOS
 //
 //  Created by Mark on 06/11/2018.
-//  Copyright © 2018 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import "SelectDatabaseFormatTableViewController.h"
-#import "SelectStorageProviderController.h"
 
 @interface SelectDatabaseFormatTableViewController ()
 
@@ -55,14 +54,14 @@
             selectedFormat = kKeePass;
             break;
         case 2:
-            selectedFormat = kPasswordSafe;
+            selectedFormat = kKeePass1;
             break;
         case 3:
-            selectedFormat = kKeePass1;
+            selectedFormat = kPasswordSafe;
             break;
         default:
             selectedFormat = kKeePass4;
-            NSLog(@"WARN: Unknown Index Path!!");
+            slog(@"WARN: Unknown Index Path!!");
             break;
     }
         

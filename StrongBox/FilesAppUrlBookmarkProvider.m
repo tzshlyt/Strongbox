@@ -3,12 +3,28 @@
 //  Strongbox
 //
 //  Created by Mark on 05/12/2018.
-//  Copyright © 2018 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import "FilesAppUrlBookmarkProvider.h"
 #import "StrongboxUIDocument.h"
 #import "Utils.h"
+#import "BookmarksHelper.h"
+#import "DatabasePreferences.h"
+#import "StrongboxiOSFilesManager.h"
+#import "iCloudSafesCoordinator.h"
+#import "NSDate+Extensions.h"
+#import "AppPreferences.h"
+
+typedef void (^CreateCompletionBlock)(DatabasePreferences *metadata, const NSError *error);
+
+@interface FilesAppUrlBookmarkProvider () <UIDocumentPickerDelegate>
+
+@property NSString* createNickName;
+@property NSURL* createTemporaryDatabaseUrl;
+@property CreateCompletionBlock createCompletion;
+
+@end
 
 @implementation FilesAppUrlBookmarkProvider
 
@@ -24,127 +40,254 @@
 
 - (instancetype)init {
     if (self = [super init]) {
-        _displayName = @"iOS Files";
-        _icon = @"lock"; 
         _storageId = kFilesAppUrlBookmark;
-        _allowOfflineCache = YES;
         _providesIcons = NO;
         _browsableNew = NO;
         _browsableExisting = NO;
         _rootFolderOnly = NO;
+        _defaultForImmediatelyOfferOfflineCache = NO; 
+        _supportsConcurrentRequests = NO; 
     }
     
     return self;
 }
 
-- (void)create:(NSString *)nickName extension:(NSString *)extension data:(NSData *)data parentFolder:(NSObject *)parentFolder viewController:(UIViewController *)viewController completion:(void (^)(SafeMetaData *, NSError *))completion {
-    // NOTIMPL:
-    NSLog(@"WARN: FilesAppUrlBookmarkProvider NOTIMPL");
+- (void)create:(NSString *)nickName 
+      fileName:(NSString *)fileName
+          data:(NSData *)data
+  parentFolder:(NSObject *)parentFolder
+viewController:(VIEW_CONTROLLER_PTR)viewController
+    completion:(void (^)(METADATA_PTR _Nullable, const NSError * _Nullable))completion {
+    NSString* f = [NSTemporaryDirectory() stringByAppendingPathComponent:fileName];
+
+    if ( [NSFileManager.defaultManager fileExistsAtPath:f] ) {
+        NSError* error;
+        if ( ![NSFileManager.defaultManager removeItemAtPath:f error:&error] ) {
+            completion(nil, error);
+            return;
+        }
+    }
+
+    NSError* error;
+    
+    if (![data writeToFile:f options:kNilOptions error:&error]) {
+        completion(nil, error);
+        return;
+    }
+    
+    self.createTemporaryDatabaseUrl = [NSURL fileURLWithPath:f];
+    self.createCompletion = completion;
+    self.createNickName = nickName;
+    
+    UIDocumentPickerViewController* vc = [[UIDocumentPickerViewController alloc] initForExportingURLs:@[self.createTemporaryDatabaseUrl] asCopy:YES];
+
+    
+    vc.delegate = self;
+    
+    [viewController presentViewController:vc animated:YES completion:nil];
 }
 
-- (void)delete:(SafeMetaData *)safeMetaData completion:(void (^)(NSError *))completion {
-    // NOTIMPL
-    NSLog(@"WARN: FilesAppUrlBookmarkProvider NOTIMPL");
+- (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
+    slog(@"didPickDocumentsAtURLs: %@", urls);
+    
+    NSURL* url = [urls objectAtIndex:0];
+
+    [self onCreateDestinationSelected:url];
+    
+    [NSFileManager.defaultManager removeItemAtURL:self.createTemporaryDatabaseUrl error:nil];
+}
+
+- (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller {
+    [NSFileManager.defaultManager removeItemAtURL:self.createTemporaryDatabaseUrl error:nil];
+}
+
+- (void)onCreateDestinationSelected:(NSURL*)dest {
+    [dest startAccessingSecurityScopedResource];
+
+    NSURL *strongboxLocalDocumentsDirectory = StrongboxFilesManager.sharedInstance.documentsDirectory;
+    NSString *strongboxLocalDocumentsPath = strongboxLocalDocumentsDirectory.URLByStandardizingPath.URLByResolvingSymlinksInPath.path;
+
+    NSURL* strongboxICloudDocumentsDirectory = iCloudSafesCoordinator.sharedInstance.iCloudDocumentsFolder;
+    NSString* strongboxICloudDocumentsPath = strongboxICloudDocumentsDirectory ? strongboxICloudDocumentsDirectory.URLByStandardizingPath.URLByResolvingSymlinksInPath.path : nil;
+    
+    NSString *filePath = dest.URLByStandardizingPath.URLByResolvingSymlinksInPath.path;
+    NSString *fileParentPath = [filePath stringByDeletingLastPathComponent];
+    
+    slog(@"[%@] == [%@]", strongboxICloudDocumentsPath, fileParentPath);
+
+    BOOL isLocalSandboxFile = [fileParentPath isEqualToString:strongboxLocalDocumentsPath];
+    BOOL isStrongboxICloudFile = strongboxICloudDocumentsPath ? [fileParentPath isEqualToString:strongboxICloudDocumentsPath] : NO;
+
+    
+    
+    
+    
+    
+    if ( isLocalSandboxFile ||  ( isStrongboxICloudFile && !AppPreferences.sharedInstance.disableNetworkBasedFeatures )) {
+        
+        slog(@"New Database is actually local to Sandbox or iCloud - using simplified non iOS Files Storage Provider. [%d][%d]", isLocalSandboxFile, isStrongboxICloudFile);
+    }
+    else {
+        NSError* error;
+        NSData* bookmark = [BookmarksHelper getBookmarkDataFromUrl:dest error:&error];
+        
+        if (bookmark) {
+            NSString* desiredFilename = dest.lastPathComponent;
+            DatabasePreferences* metadata = [self getDatabasePreferences:self.createNickName fileName:desiredFilename providerData:bookmark];
+            self.createCompletion(metadata, nil);
+        }
+        else {
+            slog(@"Error creating bookmark for iOS Files based database: [%@] - [%@]", error, dest);
+            self.createCompletion(nil, error);
+            return;
+        }
+    }
+}
+
+- (void)delete:(DatabasePreferences *)safeMetaData completion:(void (^)(const NSError *))completion {
+    
+    slog(@"WARN: FilesAppUrlBookmarkProvider NOTIMPL");
     return;
 }
 
-- (SafeMetaData *)getSafeMetaData:(NSString *)nickName fileName:(NSString*)fileName providerData:(NSObject *)providerData {
-    NSString* json = [self getJsonFileIdentifier:(NSData*)providerData autoFillBookmark:nil];
+- (DatabasePreferences *)getDatabasePreferences:(NSString *)nickName fileName:(NSString*)fileName providerData:(NSObject *)providerData {
+    NSString* json = [self getJsonFileIdentifier:(NSData*)providerData];
     
-    return [[SafeMetaData alloc] initWithNickName:nickName
-                                  storageProvider:self.storageId
-                                         fileName:fileName
-                                   fileIdentifier:json];
+    return [DatabasePreferences templateDummyWithNickName:nickName
+                                          storageProvider:self.storageId
+                                                 fileName:fileName
+                                           fileIdentifier:json];
 }
 
 - (void)list:(NSObject *)parentFolder
 viewController:(UIViewController *)viewController
-  completion:(void (^)(BOOL, NSArray<StorageBrowserItem *> *, NSError *))completion {
-    // NOTIMPL
-    NSLog(@"WARN: FilesAppUrlBookmarkProvider NOTIMPL");
+  completion:(void (^)(BOOL, NSArray<StorageBrowserItem *> *, const NSError *))completion {
+    
+    slog(@"WARN: FilesAppUrlBookmarkProvider NOTIMPL");
     return;
 }
 
 - (void)loadIcon:(NSObject *)providerData viewController:(UIViewController *)viewController completion:(void (^)(UIImage *))completionHandler {
-    // NOTIMPL
+    
 }
 
-- (void)read:(SafeMetaData *)safeMetaData viewController:(UIViewController *)viewController isAutoFill:(BOOL)isAutoFill completion:(void (^)(NSData * _Nullable, NSError * _Nullable))completion {
-    //NSLog(@"READ! %@", safeMetaData);
+- (void)pullDatabase:(DatabasePreferences *)safeMetaData interactiveVC:(UIViewController *)viewController options:(StorageProviderReadOptions *)options completion:(StorageProviderReadCompletionBlock)completion {
+    
     
     NSError *error;
-    NSURL* url = [self filesAppUrlFromMetaData:safeMetaData isAutoFill:isAutoFill ppError:&error];
+    NSURL* url = [self filesAppUrlFromMetaData:safeMetaData ppError:&error];
     
     if(error || !url) {
-        NSLog(@"Error or nil URL in Files App Provider: %@", error);
-        completion(nil, error);
+        slog(@"Error or nil URL in Files App Provider: %@", error);
+        completion(kReadResultError, nil, nil, error);
         return;
     }
 
     BOOL securitySucceeded = [url startAccessingSecurityScopedResource];
     if (!securitySucceeded) {
-        NSLog(@"Could not access secure scoped resource!");
+        
+        slog(@"Could not access secure scoped resource! Will try get attributes anyway...");
+    }
+
+
+
+
+
+
+
+    dispatch_async(dispatch_get_main_queue(), ^{ 
+        StrongboxUIDocument *document = [[StrongboxUIDocument alloc] initWithFileURL:url];
+        
+        if (!document) {
+            completion(kReadResultError, nil, nil, error ? error : [Utils createNSError:@"Invalid Files URL" errorCode:-6]);
+            return;
+        }
+
+        [document openWithCompletionHandler:^(BOOL success) {
+            if (!success) {
+                completion(kReadResultError, nil, nil, error);
+            }
+            else {
+                if ( options && options.onlyIfModifiedDifferentFrom && document.fileModificationDate && [document.fileModificationDate isEqualToDateWithinEpsilon:options.onlyIfModifiedDifferentFrom] ) {
+                    completion(kReadResultModifiedIsSameAsLocal, nil, nil, nil);
+                }
+                else {
+                    completion(kReadResultSuccess, document.data, document.fileModificationDate, nil );
+                }
+            }
+            
+            [url stopAccessingSecurityScopedResource];
+            
+            [document closeWithCompletionHandler:nil];
+        }];
+    });
+}
+
+- (void)readWithProviderData:(NSObject *)providerData viewController:(UIViewController *)viewController options:(StorageProviderReadOptions *)options completion:(StorageProviderReadCompletionBlock)completionHandler {
+    
+    slog(@"WARN: FilesAppUrlBookmarkProvider NOTIMPL");
+}
+
+- (void)pushDatabase:(DatabasePreferences *)safeMetaData interactiveVC:(UIViewController *)viewController data:(NSData *)data completion:(StorageProviderUpdateCompletionBlock)completion {
+    NSError *error;
+    NSURL* url = [self filesAppUrlFromMetaData:safeMetaData ppError:&error];
+    
+    if(error) {
+        slog(@"Error or nil URL in Files App provider: [%@]", error);
+        completion(kUpdateResultError, nil, error);
         return;
     }
     
-    StrongboxUIDocument *document = [[StrongboxUIDocument alloc] initWithFileURL:url];
-    
-    [document openWithCompletionHandler:^(BOOL success) {
-        completion(success ? document.data : nil, nil);
-        
-        [url stopAccessingSecurityScopedResource];
-    }];
-}
-
-- (void)readWithProviderData:(NSObject *)providerData viewController:(UIViewController *)viewController completion:(void (^)(NSData *, NSError *))completionHandler {
-    // NOTIMPL:
-    NSLog(@"WARN: FilesAppUrlBookmarkProvider NOTIMPL");
-}
-
-- (void)update:(SafeMetaData *)safeMetaData data:(NSData *)data isAutoFill:(BOOL)isAutoFill completion:(void (^)(NSError * _Nullable))completion {
-    NSError *error;
-    NSURL* url = [self filesAppUrlFromMetaData:safeMetaData isAutoFill:isAutoFill ppError:&error];
-    
-    if(error || !url) {
-        NSLog(@"Error or nil URL in Files App provider: [%@]", error);
-        completion(error);
+    if(!url || url.absoluteString.length == 0) {
+        slog(@"nil or empty URL in Files App provider");
+        error = [Utils createNSError:[NSString stringWithFormat:@"Invalid URL in Files App Provider: %@", url] errorCode:-1];
+        completion(kUpdateResultError, nil, error);
+        return;
     }
     
-    StrongboxUIDocument *document = [[StrongboxUIDocument alloc] initWithData:data fileUrl:url];
-    
-    [document saveToURL:url forSaveOperation:UIDocumentSaveForOverwriting completionHandler:^(BOOL success) {
-        if(success) {
-            NSLog(@"Done");
-            completion(nil);
-        }
-        else {
-            NSError *err = [Utils createNSError:NSLocalizedString(@"files_provider_problem_saving", @"Problem Saving to External File") errorCode:-1];
-            completion(err);
-        }
-    }];
+    dispatch_async(dispatch_get_main_queue(), ^{ 
+        StrongboxUIDocument *document = [[StrongboxUIDocument alloc] initWithData:data fileUrl:url];
+        
+        [document saveToURL:url forSaveOperation:UIDocumentSaveForOverwriting completionHandler:^(BOOL success) {
+            if(success) {
+                slog(@"Done");
+                completion(kUpdateResultSuccess, document.fileModificationDate, nil);
+            }
+            else {
+                NSError *err = [Utils createNSError:NSLocalizedString(@"files_provider_problem_saving", @"Problem Saving to External File") errorCode:-1];
+                completion(kUpdateResultError, nil, err);
+            }
+            
+            [document closeWithCompletionHandler:nil];
+        }];
+    });
 }
 
-- (SafeMetaData *)getSafeMetaData:(NSString *)nickName providerData:(NSObject *)providerData {
-    // NOTIMPL
+- (DatabasePreferences *)getDatabasePreferences:(NSString *)nickName providerData:(NSObject *)providerData {
     
-    NSLog(@"WARN: FilesAppUrlBookmarkProvider NOTIMPL");
+    
+    slog(@"WARN: FilesAppUrlBookmarkProvider NOTIMPL");
     
     return nil;
 }
 
-//
-
-- (NSString*)getJsonFileIdentifier:(NSData*)bookmark autoFillBookmark:(NSData*)autoFillBookmark {
-    NSString *base64 = [bookmark base64EncodedStringWithOptions:kNilOptions];
-    NSString *base64AutoFill = [autoFillBookmark base64EncodedStringWithOptions:kNilOptions];
+- (void)getModDate:(nonnull METADATA_PTR)safeMetaData completion:(nonnull StorageProviderGetModDateCompletionBlock)completion {
     
-    NSDictionary* dp = autoFillBookmark ? @{ @"bookMark" : base64, @"autoFillBookMark" : base64AutoFill } : @{  @"bookMark" : base64 };
+}
+
+
+
+
+- (NSString*)getJsonFileIdentifier:(NSData*)bookmark {
+    NSString *base64 = [bookmark base64EncodedStringWithOptions:kNilOptions];
+    
+    NSDictionary* dp = @{  @"bookMark" : base64 };
     
     NSError* error;
     NSData* data = [NSJSONSerialization dataWithJSONObject:dp options:0 error:&error];
     
     if(error) {
-        NSLog(@"%@", error);
+        slog(@"%@", error);
         return nil;
     }
     
@@ -153,7 +296,7 @@ viewController:(UIViewController *)viewController
     return json;
 }
 
-- (NSData*)bookMarkFromMetadata:(SafeMetaData*)metadata isAutoFill:(BOOL)isAutoFill {
+- (NSData*)bookMarkFromMetadata:(DatabasePreferences*)metadata {
     NSData* data = [metadata.fileIdentifier dataUsingEncoding:NSUTF8StringEncoding];
     
     NSError *error;
@@ -163,53 +306,33 @@ viewController:(UIViewController *)viewController
         return nil;
     }
     
-    NSString* b64 = isAutoFill ? dictionary[@"autoFillBookMark"] : dictionary[@"bookMark"];
+    NSString* b64 = dictionary[@"bookMark"];
     
-    return b64 ? [[NSData alloc] initWithBase64EncodedString:b64 options:kNilOptions] : nil;
+    return b64 ? [[NSData alloc] initWithBase64EncodedString:b64 options:NSDataBase64DecodingIgnoreUnknownCharacters] : nil;
 }
 
-- (NSURL*)filesAppUrlFromMetaData:(SafeMetaData*)safeMetaData isAutoFill:(BOOL)isAutoFill ppError:(NSError**)ppError {
-    NSData* bookmarkData = [self bookMarkFromMetadata:safeMetaData isAutoFill:isAutoFill];
+- (NSURL*)filesAppUrlFromMetaData:(DatabasePreferences*)safeMetaData ppError:(NSError**)ppError {
+    NSData* bookmarkData = [self bookMarkFromMetadata:safeMetaData];
     if(!bookmarkData) {
-        NSLog(@"Bookmark not found in metadata... possibly autofill initial read?");
+        slog(@"Bookmark not found in metadata...");
         return nil;
     }
     
-    NSError *error;
-    BOOL bookmarkIsStale; // https://stackoverflow.com/questions/23954662/what-is-the-correct-way-to-handle-stale-nsurl-bookmarks
-    NSURLBookmarkResolutionOptions options = NSURLBookmarkResolutionWithoutUI;
+    NSData* updatedBookmark; 
+    NSURL* url = [BookmarksHelper getUrlFromBookmarkData:bookmarkData updatedBookmark:&updatedBookmark error:ppError];
     
-    NSURL *url = [NSURL URLByResolvingBookmarkData:bookmarkData
-                                           options:options
-                                     relativeToURL:nil
-                               bookmarkDataIsStale:&bookmarkIsStale
-                                             error:&error];
-    
-    if(bookmarkIsStale) {
-        url = nil;
-        error = [Utils createNSError:NSLocalizedString(@"files_provider_stale_reference", @"Strongbox's reference to this external file is stale. Please remove and re-add this database.") errorCode:-45];   
+    if(url && !*ppError && updatedBookmark) {
+        slog(@"Bookmark was stale! Updating Database with new one...");
+        
+        NSData* mainAppBookmark = updatedBookmark;
+        NSString* fileIdentifier = [self getJsonFileIdentifier:mainAppBookmark];
+        
+        safeMetaData.fileIdentifier = fileIdentifier;
     }
     
-    if(error) {
-        *ppError = error;
-    }
+    slog(@"Got URL from Bookmark: [%@]", url);
     
     return url;
-}
-
-- (BOOL)autoFillBookMarkIsSet:(SafeMetaData*)metadata {
-    NSError* error;
-    return [self filesAppUrlFromMetaData:metadata isAutoFill:YES ppError:&error] != nil;
-}
-
-- (SafeMetaData*)setAutoFillBookmark:(NSData *)bookmark metadata:(SafeMetaData *)metadata {
-    NSData* originalBookmark = [self bookMarkFromMetadata:metadata isAutoFill:NO];
-    
-    NSString* fileIdentifier = [self getJsonFileIdentifier:originalBookmark autoFillBookmark:bookmark];
-    
-    metadata.fileIdentifier = fileIdentifier;
-    
-    return metadata;
 }
 
 @end

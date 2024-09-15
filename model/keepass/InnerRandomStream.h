@@ -3,7 +3,7 @@
 //  Strongbox
 //
 //  Created by Mark on 19/10/2018.
-//  Copyright © 2018 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import <Foundation/Foundation.h>
@@ -14,7 +14,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 @property (nonatomic, readonly) NSData* key;
 
-- (NSData*)xor:(NSData*)ct;
+- (NSData*)doTheXor:(NSData*)ct;
 
 @end
 

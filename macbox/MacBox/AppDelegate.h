@@ -7,20 +7,32 @@
 //
 
 #import <Cocoa/Cocoa.h>
-#import <StoreKit/StoreKit.h>
-#import "NSArray+Extensions.h"
 
-#define kAutoLockTime @"autoLockTime"
-#define kPreferencesChangedNotification @"preferencesChangedNotification"
+extern const NSInteger kTopLevelMenuItemTagStrongbox;
+extern const NSInteger kTopLevelMenuItemTagFile;
+extern const NSInteger kTopLevelMenuItemTagView;
 
-extern NSString* const kStrongboxPasteboardName;
-extern NSString* const kDragAndDropInternalUti;
-extern NSString* const kDragAndDropExternalUti;
+extern NSString* _Nonnull const kUpdateNotificationQuickRevealStateChanged;
 
-@interface AppDelegate : NSObject <NSApplicationDelegate, SKProductsRequestDelegate>
+@interface AppDelegate : NSObject <NSApplicationDelegate>
 
-- (void)showUpgradeModal:(NSInteger)delay;
+- (IBAction)onUpgradeToFullVersion:(id _Nullable )sender;
+
+
+
 - (void)clearClipboardWhereAppropriate;
+- (void)onStrongboxDidChangeClipboard; 
+
+@property BOOL suppressQuickLaunchForNextAppActivation; 
+
+@property (readonly) BOOL isWasLaunchedAsLoginItem;
+
+
+
+- (void)cancelAutoLockTimer;
+- (void)startAutoLockTimer;
+
+- (void)showAndActivateStrongbox:(NSString*_Nullable)databaseUuid completion:(void (^_Nullable)(void))completion;
 
 @end
 

@@ -3,23 +3,24 @@
 //  Strongbox-iOS
 //
 //  Created by Mark on 25/07/2018.
-//  Copyright © 2018 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import "OneDriveStorageProvider.h"
 #import "Utils.h"
-#import <SVProgressHUD/SVProgressHUD.h>
+#import "SVProgressHUD.h"
 #import "OneDriveSDK.h"
+#import "NSDate+Extensions.h"
 
-@interface OneDriveStorageProvider()
+@interface OneDriveStorageProvider ()
 
 @property (nonatomic) ODClient *odClient;
 
 @end
 
-static NSString *kApplicationId = @"708058b4-71de-4c54-ae7f-0e6f5872e953";
+static NSString * const kApplicationId = @"708058b4-71de-4c54-ae7f-0e6f5872e953";
 
-@implementation OneDriveStorageProvider
+@implementation OneDriveStorageProvider 
 
 + (instancetype)sharedInstance {
     static OneDriveStorageProvider *sharedInstance = nil;
@@ -31,48 +32,60 @@ static NSString *kApplicationId = @"708058b4-71de-4c54-ae7f-0e6f5872e953";
     return sharedInstance;
 }
 
+- (void)getModDate:(nonnull METADATA_PTR)safeMetaData completion:(nonnull StorageProviderGetModDateCompletionBlock)completion {
+    
+}
+
 - (instancetype)init {
     if (self = [super init]) {
-        _displayName = @"OneDrive";
-        _icon = @"one-drive-icon-only-32x32";
         _storageId = kOneDrive;
-        _allowOfflineCache = YES;
         _providesIcons = NO;
         _browsableNew = YES;
         _browsableExisting = YES;
         _rootFolderOnly = NO;
+        _defaultForImmediatelyOfferOfflineCache = YES; 
+        _supportsConcurrentRequests = NO; 
+        _privacyOptInRequired = YES;
         
         [ODClient setMicrosoftAccountAppId:kApplicationId scopes:@[@"onedrive.readwrite", @"offline_access"]];
         
-        // MMcG: 10-Oct-2018 - Originally had OneDrive for Business as a separate provider but it turns out you can do
-        // this, and set it up as both personal and business. Deciding for simplicity to keep it to only one procider
-        // and not support multi accounting. Also, the underlying cookies are shared so it would be difficult to manage
-        // this...
+        
+        
+        
+        
         
         static NSString * const kBusinessApplicationId = @"8c10a31a-0f4b-4931-a450-c2959b0a7169";
-        static NSString * const kBusinessRedirectUri = @"https://azure-redirect-uri.strongboxsafe.com";
+        static NSString * const kBusinessRedirectUri = @"https:
 
-        //[ODClient setActiveDirectoryAppId:kBusinessApplicationId redirectURL:kBusinessRedirectUri];
         
-        [ODClient setActiveDirectoryAppId:kBusinessApplicationId resourceId:@"https://graph.microsoft.com/" apiEndpoint:@"https://graph.microsoft.com/v1.0/me" redirectURL:kBusinessRedirectUri];
+        
+        [ODClient setActiveDirectoryAppId:kBusinessApplicationId
+                               resourceId:@"https:
+                              apiEndpoint:@"https:
+                              redirectURL:kBusinessRedirectUri];
+        
 
-        // Testing Code...
+
+
+
+
         
-//        ODClient* blah = [ODClient loadCurrentClient];
-//
-//        if(blah) {
-//            [blah signOutWithCompletion:^(NSError *error) {
-//                NSLog(@"Signed Out");
-//                NSHTTPCookieStorage *cookieStorage = [NSHTTPCookieStorage sharedHTTPCookieStorage];
-//                for (NSHTTPCookie *each in cookieStorage.cookies) {
-//                    NSLog(@"%@", each);
-//                    [cookieStorage deleteCookie:each]; }
-//            }];
-//        }
-//        else {
-//            NSHTTPCookieStorage *cookieStorage = [NSHTTPCookieStorage sharedHTTPCookieStorage];
-//            for (NSHTTPCookie *each in cookieStorage.cookies) { NSLog(@"%@", each); [cookieStorage deleteCookie:each]; }
-//        }
+        
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         
         return self;
     }
@@ -86,8 +99,8 @@ static NSString *kApplicationId = @"708058b4-71de-4c54-ae7f-0e6f5872e953";
               data:(NSData *)data
       parentFolder:(NSObject *)parentFolder
     viewController:(UIViewController *)viewController
-        completion:(void (^)(SafeMetaData *metadata, NSError *error))completion {
-    [self authWrapperWithCompletion:^(NSError *error) {
+        completion:(void (^)(DatabasePreferences *metadata, const NSError *error))completion {
+    [self authWrapperWithCompletion:viewController completion:^(BOOL userInteractionRequired, NSError *error) {
         if(error) {
             completion(nil, error);
             return;
@@ -120,9 +133,9 @@ static NSString *kApplicationId = @"708058b4-71de-4c54-ae7f-0e6f5872e953";
             });
             
             if (error == nil) {
-                //NSLog(@"%@ - %@", response, error);
                 
-                SafeMetaData *metadata = [self getSafeMetaData:nickName
+                
+                DatabasePreferences *metadata = [self getDatabasePreferences:nickName
                                                   providerData:response];
 
                 completion(metadata, nil);
@@ -137,102 +150,32 @@ static NSString *kApplicationId = @"708058b4-71de-4c54-ae7f-0e6f5872e953";
 
 }
 
-- (void)read:(SafeMetaData *)safeMetaData viewController:(UIViewController *)viewController isAutoFill:(BOOL)isAutoFill completion:(void (^)(NSData * _Nullable, NSError * _Nullable))completion {
-        [self authWrapperWithCompletion:^(NSError *error) {
-            if(error) {
-                completion(nil, error);
-                return;
-            }
-            
+- (void)pullDatabase:(DatabasePreferences *)safeMetaData interactiveVC:(UIViewController *)viewController options:(StorageProviderReadOptions *)options completion:(StorageProviderReadCompletionBlock)completion {
+    [self authWrapperWithCompletion:viewController completion:^(BOOL userInteractionRequired, NSError *error) {
+        if(error) {
+            completion(kReadResultError, nil, nil, error);
+            [self signout:^(NSError *error) { }];  
+            return;
+        }
+        
+        if (userInteractionRequired) {
+            completion(kReadResultBackgroundReadButUserInteractionRequired, nil, nil, nil);
+            return;
+        }
+        
+        if (viewController) {
             dispatch_async(dispatch_get_main_queue(), ^{
-                [SVProgressHUD showWithStatus:@"Locating..."];
+                [SVProgressHUD showWithStatus:NSLocalizedString(@"generic_status_sp_locating_ellipsis", @"Locating...")];
             });
-            
-            
-            [self providerDataFromMetadata:safeMetaData completion:^(ODItem *item, NSError *error) {
+        }
+        
+        
+        [self providerDataFromMetadata:safeMetaData completion:^(ODItem *item, NSError *error) {
+            if (viewController) {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     [SVProgressHUD dismiss];
                 });
-                
-                if(error || !item) {
-                    if(!item) {
-                        error = [Utils createNSError:@"Could not locate the database file. Has it been renamed or moved?" errorCode:45];
-                    }
-                    
-                    NSLog(@"OneDrive Read: %@", error);
-                    completion(nil, error);
-                    return;
-                }
-                
-                [self readWithProviderData:item viewController:viewController completion:completion];
-            }];
-        }];
-}
-
-- (void)readWithProviderData:(NSObject *)providerData
-              viewController:(UIViewController *)viewController
-                  completion:(void (^)(NSData *data, NSError *error))completion {
-    [self authWrapperWithCompletion:^(NSError *error) {
-        if(error) {
-            completion(nil, error);
-            return;
-        }
-        
-        ODItem* item = (ODItem*)providerData;
-        
-        //NSLog(@"OneDrive Reading: [%@]", item);
-        
-        ODItemContentRequest *request;
-        
-        request = [[[self.odClient drives:item.parentReference.driveId] items:item.id] contentRequest];
-        
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [SVProgressHUD showWithStatus:@"Reading..."];
-        });
-        
-        [request downloadWithCompletion:^(NSURL *filePath, NSURLResponse *urlResponse, NSError *error){
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [SVProgressHUD dismiss];
-            });
-            
-            if(error) {
-                NSLog(@"%@", error);
-                completion(nil, error);
-                return;
             }
-            
-            // The file path to the item on disk. This is a temporary file and will be removed
-            // after the block is done executing.
-            
-            //        NSLog(@"File Url: %@", filePath);
-            //        NSLog(@"File Path: %@", filePath.path);
-            //        NSLog(@"Exists: %hhd", [[NSFileManager defaultManager] fileExistsAtPath:filePath.path]);
-    
-            
-            NSData *data = [[NSFileManager defaultManager] contentsAtPath:filePath.path];
-            
-            //NSLog(@"OneDrive Read %lu bytes.", (unsigned long)data.length);
-            
-            completion(data, nil);
-        }];
-    }];
-}
-
-- (void)update:(SafeMetaData *)safeMetaData data:(NSData *)data isAutoFill:(BOOL)isAutoFill completion:(void (^)(NSError * _Nullable))completion {
-    [self authWrapperWithCompletion:^(NSError *error) {
-        if(error) {
-            completion(error);
-            return;
-        }
-        
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [SVProgressHUD showWithStatus:@"Locating..."];
-        });
-        
-        [self providerDataFromMetadata:safeMetaData completion:^(ODItem *item, NSError *error) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [SVProgressHUD dismiss];
-            });
             
             if(error || !item) {
                 if(!item) {
@@ -240,36 +183,167 @@ static NSString *kApplicationId = @"708058b4-71de-4c54-ae7f-0e6f5872e953";
                 }
                 
                 NSLog(@"OneDrive Read: %@", error);
-                completion(error);
+                completion(kReadResultError, nil, nil, error);
+                [self signout:^(NSError *error) { }];  
                 return;
             }
             
-            ODItemContentRequest *request;
-            request = [[[self.odClient drives:item.parentReference.driveId] items:item.id] contentRequest];
-            
+            [self readWithProviderData:item viewController:viewController options:options completion:completion];
+        }];
+    }];
+}
+
+- (void)readWithProviderData:(NSObject *)providerData viewController:(UIViewController *)viewController options:(StorageProviderReadOptions *)options completion:(StorageProviderReadCompletionBlock)completion {
+    [self authWrapperWithCompletion:viewController completion:^(BOOL userInteractionRequired, NSError *error) {
+        if(error) {
+            completion(kReadResultError, nil, nil, error);
+            [self signout:^(NSError *error) { }];  
+            return;
+        }
+                      
+        if (userInteractionRequired) {
+            completion(kReadResultBackgroundReadButUserInteractionRequired, nil, nil, nil);
+            return;
+        }
+
+        ODItem* item = (ODItem*)providerData;
+        
+
+
+        NSDate* dtMod = item.lastModifiedDateTime;
+        NSDate* dtMod2 = options.onlyIfModifiedDifferentFrom;
+    
+        if (options && dtMod2 && dtMod) {
+            if ([dtMod isEqualToDateWithinEpsilon:dtMod2]) {
+                completion(kReadResultModifiedIsSameAsLocal, nil, nil, nil);
+                return;
+            }
+        }
+
+        ODItemContentRequest *request;
+        
+        request = [[[self.odClient drives:item.parentReference.driveId] items:item.id] contentRequest];
+        
+        if (viewController) {
             dispatch_async(dispatch_get_main_queue(), ^{
-                [SVProgressHUD showWithStatus:@"Updating..."];
+                [SVProgressHUD showWithStatus:NSLocalizedString(@"storage_provider_status_reading", @"A storage provider is in the process of reading. This is the status displayed on the progress dialog. In english:  Reading...")];
             });
-            
-            [request uploadFromData:data completion:^(ODItem *response, NSError *error) {
+        }
+        
+        [request downloadWithCompletion:^(NSURL *filePath, NSURLResponse *urlResponse, NSError *error){
+            if (viewController) {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     [SVProgressHUD dismiss];
                 });
-                
-                completion(error);
-            }];
+            }
+            
+            if(error) {
+                NSLog(@"%@", error);
+                completion(kReadResultError, nil, nil, error);
+                [self signout:^(NSError *error) { }];  
+                return;
+            }
+            
+            
+            
+            
+            
+            
+            
+    
+            
+            NSData *data = [[NSFileManager defaultManager] contentsAtPath:filePath.path];
+            
+            
+            
+            completion(kReadResultSuccess, data, item.lastModifiedDateTime, nil);
         }];
+    }];
+}
+
+- (void)pushDatabase:(DatabasePreferences *)safeMetaData interactiveVC:(UIViewController *)viewController data:(NSData *)data completion:(StorageProviderUpdateCompletionBlock)completion {
+    [self authWrapperWithCompletion:viewController completion:^(BOOL userInteractionRequired, NSError *error) {
+        if(error) {
+            completion(kUpdateResultError, nil, error);
+            return;
+        }
+                      
+        if (userInteractionRequired) {
+           completion(kUpdateResultUserInteractionRequired, nil, nil);
+           return;
+        }
+
+        if (viewController) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [SVProgressHUD showWithStatus:NSLocalizedString(@"generic_status_sp_locating_ellipsis", @"Locating...")];
+            });
+        }
+
+        [self providerDataFromMetadata:safeMetaData completion:^(ODItem *item, NSError *error) {
+            if (viewController) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [SVProgressHUD dismiss];
+                });
+            }
+            
+            if(error || !item) {
+                if(!item) {
+                    error = [Utils createNSError:@"Could not locate the database file. Has it been renamed or moved?" errorCode:45];
+                }
+                
+                NSLog(@"OneDrive Read: %@", error);
+                completion(kUpdateResultError, nil, error);
+                return;
+            }
+
+            [self upload:safeMetaData item:item interactiveVC:viewController data:data completion:completion];
+        }];
+    }];
+}
+
+- (void)upload:(DatabasePreferences *)safeMetaData item:(ODItem*)item interactiveVC:(UIViewController *)viewController data:(NSData *)data completion:(StorageProviderUpdateCompletionBlock)completion {
+    ODItemContentRequest *request;
+    request = [[[self.odClient drives:item.parentReference.driveId] items:item.id] contentRequest];
+    
+    if (viewController) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [SVProgressHUD showWithStatus:@"Updating..."];
+        });
+    }
+    
+    [request uploadFromData:data completion:^(ODItem *response, NSError *error) {
+        if (viewController) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [SVProgressHUD dismiss];
+            });
+        }
+        
+        if (error) {
+            completion(kUpdateResultError, nil, error);
+        }
+        else {
+            completion(kUpdateResultSuccess, response.lastModifiedDateTime, nil);
+        }
     }];
 }
 
 - (void)      list:(NSObject *)parentFolder
     viewController:(UIViewController *)viewController
-        completion:(void (^)(BOOL, NSArray<StorageBrowserItem *> *, NSError *))completion {
-    [self authWrapperWithCompletion:^(NSError *error) {
+        completion:(void (^)(BOOL, NSArray<StorageBrowserItem *> *, const NSError *))completion {
+    [self authWrapperWithCompletion:viewController completion:^(BOOL userInteractionRequired, NSError *error) {
         if(error) {
             completion(error.code == ODAuthCanceled, nil, error);
+            if (error.code != ODAuthCanceled) {
+                [self signout:^(NSError *error) { }];  
+            }
             return;
         }
+                      
+       if (userInteractionRequired) {
+           completion(NO, nil, nil);
+           return;
+       }
+
         
         ODItem* parent = ((ODItem*)parentFolder);
         
@@ -291,7 +365,7 @@ static NSString *kApplicationId = @"708058b4-71de-4c54-ae7f-0e6f5872e953";
 - (void)listRecursive:(ODChildrenCollectionRequest *)request
       error:(NSError *)error
       existingItems:(NSMutableArray<StorageBrowserItem*>*)existingItems
- completion:(void (^)(BOOL userCancelled, NSArray<StorageBrowserItem *> *items, NSError *error))completion
+ completion:(void (^)(BOOL userCancelled, NSArray<StorageBrowserItem *> *items, const NSError *error))completion
 {
     [request getWithCompletion:^(ODCollection *response, ODChildrenCollectionRequest *nr, NSError *error) {
         if(error) {
@@ -313,7 +387,7 @@ static NSString *kApplicationId = @"708058b4-71de-4c54-ae7f-0e6f5872e953";
     }];
 }
 
-- (SafeMetaData *)getSafeMetaData:(NSString *)nickName providerData:(NSObject *)providerData {
+- (DatabasePreferences *)getDatabasePreferences:(NSString *)nickName providerData:(NSObject *)providerData {
     ODItem *file = (ODItem *)providerData;
    
     NSDictionary* dp = [NSDictionary dictionaryWithObjectsAndKeys:file.parentReference.driveId, @"driveId", file.parentReference.id, @"parentFolderId", nil];
@@ -327,16 +401,16 @@ static NSString *kApplicationId = @"708058b4-71de-4c54-ae7f-0e6f5872e953";
     }
    
     NSString *json = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-    //NSLog(@"%@", json);
+    
     NSString *parent = json;
     
-    return [[SafeMetaData alloc] initWithNickName:nickName
-                                  storageProvider:self.storageId
-                                         fileName:file.name
-                                   fileIdentifier:parent];
+    return [DatabasePreferences templateDummyWithNickName:nickName
+                                          storageProvider:self.storageId
+                                                 fileName:file.name
+                                           fileIdentifier:parent];
 }
 
-- (void)providerDataFromMetadata:(SafeMetaData*)metadata completion:(void(^)(ODItem* item, NSError* error))completion {
+- (void)providerDataFromMetadata:(DatabasePreferences*)metadata completion:(void(^)(ODItem* item, NSError* error))completion {
     NSData* data = [metadata.fileIdentifier dataUsingEncoding:NSUTF8StringEncoding];
     
     NSError *error;
@@ -350,7 +424,7 @@ static NSString *kApplicationId = @"708058b4-71de-4c54-ae7f-0e6f5872e953";
     NSString* driveId = [dictionary objectForKey:@"driveId"];
     NSString* parentFolderId = [dictionary objectForKey:@"parentFolderId"];
     
-    //NSLog(@"Searching for drive:[%@] parent:[%@] name:[%@]", driveId, parentFolderId, metadata.fileName);
+    
     
     ODChildrenCollectionRequest *request = [[[[self.odClient drives:driveId] items:parentFolderId] children] request];
     
@@ -369,7 +443,7 @@ static NSString *kApplicationId = @"708058b4-71de-4c54-ae7f-0e6f5872e953";
         
         ODItem* foundItem = nil;
         for (ODItem* item in response.value) {
-            if([item.name isEqualToString:target]) {
+            if([item.name compare:target] == NSOrderedSame) {
                 foundItem = item;
                 break;
             }
@@ -386,25 +460,25 @@ static NSString *kApplicationId = @"708058b4-71de-4c54-ae7f-0e6f5872e953";
 
 - (void)loadIcon:(NSObject *)providerData viewController:(UIViewController *)viewController
       completion:(void (^)(UIImage *image))completionHandler {
-    // NOTSUPPORTED
+    
 }
 
-- (void)delete:(SafeMetaData *)safeMetaData completion:(void (^)(NSError *))completion {
-    // NOTIMPL
+- (void)delete:(DatabasePreferences *)safeMetaData completion:(void (^)(const NSError *))completion {
+    
 }
 
 - (NSArray *)mapToBrowserItems:(NSArray<ODItem *> *)entries {
     NSMutableArray<StorageBrowserItem *> *ret = [[NSMutableArray alloc] init];
     
     for (ODItem *entry in entries) {
-        //NSLog(@"Entry: %@", entry);
-        //NSLog(@"-------------------------------------------------------------------------------------------------------");
         
-        //        if(entry.remoteItem) {
-        //            NSLog(@"OneDrive Skipping Remote Item: [%@]", entry.name);
-        //            continue;
-        //        }
-        //
+        
+        
+        
+        
+        
+        
+        
         
         StorageBrowserItem *item = [[StorageBrowserItem alloc] init];
         
@@ -418,25 +492,40 @@ static NSString *kApplicationId = @"708058b4-71de-4c54-ae7f-0e6f5872e953";
     return ret;
 }
 
-- (void)authWrapperWithCompletion:(void (^)(NSError* error))completion {
-    [ODClient clientWithCompletion:^(ODClient *client, NSError *error){
-        if (!error){
-            self.odClient = client;
-            completion(nil);
-        }
-        else {
-            NSLog(@"Onedrive error: %@", error);
-            self.odClient = nil;
-            completion(error);
-        }
-    }];
+- (void)authWrapperWithCompletion:(UIViewController*)viewController completion:(void (^)(BOOL userInteractionRequired, NSError* error))completion {
+    ODClient* current = [ODClient loadCurrentClient];
+    if (current) {
+        self.odClient = current;
+        completion(NO, nil);
+        return;
+    }
+    
+    if (!viewController) {
+        completion (YES, nil);
+        return;
+    }
+    else {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [ODClient clientWithCompletion:^(ODClient *client, NSError *error){
+                if (!error){
+                    self.odClient = client;
+                    completion(NO, nil);
+                }
+                else {
+                    NSLog(@"Onedrive error: %@", error);
+                    self.odClient = nil;
+                    completion(NO, error);
+                }
+            }];
+        });
+    }
 }
 
 - (void)signout:(void (^)(NSError *error))completion {
     if(!self.odClient) {
         NSLog(@"OneDrive Signout: No Active Session.");
         
-        // NB: Necessary so that you can choose a different account.
+        
         
         NSHTTPCookieStorage *cookieStorage = [NSHTTPCookieStorage sharedHTTPCookieStorage];
         for (NSHTTPCookie *each in cookieStorage.cookies) { [cookieStorage deleteCookie:each]; }
@@ -447,7 +536,7 @@ static NSString *kApplicationId = @"708058b4-71de-4c54-ae7f-0e6f5872e953";
         [self.odClient signOutWithCompletion:^(NSError *error) {
             self.odClient = nil;
 
-            // NB: Necessary so that you can choose a different account.
+            
 
             NSHTTPCookieStorage *cookieStorage = [NSHTTPCookieStorage sharedHTTPCookieStorage];
             for (NSHTTPCookie *each in cookieStorage.cookies) { [cookieStorage deleteCookie:each]; }

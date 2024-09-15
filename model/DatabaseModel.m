@@ -1,557 +1,1568 @@
-#import <Foundation/Foundation.h>
 #import "DatabaseModel.h"
-#import "PwSafeDatabase.h"
-#import "KeePassDatabase.h"
-#import "AbstractDatabaseFormatAdaptor.h"
 #import "Utils.h"
-#import "Kdbx4Database.h"
-#import "Kdb1Database.h"
-#import "Settings.h"
 #import "PasswordMaker.h"
 #import "SprCompilation.h"
 #import "NSArray+Extensions.h"
 #import "NSMutableArray+Extensions.h"
-#import "Kdbx4Serialization.h"
-#import "KeePassCiphers.h"
-#import "KissXML.h"
+#import "NSData+Extensions.h"
+#import "NSDate+Extensions.h"
+#import "KeePassConstants.h"
+#import "ConcurrentMutableDictionary.h"
+#import "MinimalPoolHelper.h"
+#import "NSString+Extensions.h"
+#import "FastMaps.h"
+#import "CrossPlatform.h"
+#import "Node+KeeAgentSSH.h"
+#import "Constants.h"
+#import "Node+Passkey.h"
+
+#if TARGET_OS_IPHONE
+#import "KissXML.h" 
+#endif
+
+#ifndef IS_APP_EXTENSION
+#import "Strongbox-Swift.h"
+#else
+#import "Strongbox_Auto_Fill-Swift.h"
+#endif
+
+static NSString* const kKeePass1BackupGroupName = @"Backup";
+static const DatabaseFormat kDefaultDatabaseFormat = kKeePass4;
+static NSString* const kPrintingStylesheet = @"<head><style type=\"text/css\"> \
+    body { width: 800px; } \
+    .database-title { font-size: 36pt; text-align: center; } \
+    .group-title { font-size: 20pt; margin-top:20px; margin-bottom: 5px; text-align: center; font-weight: bold; } \
+    .entry-table {  border-collapse: collapse; margin-bottom: 10px; width: 800px; border: 1px solid black; } \
+    .entry-title { font-weight: bold; font-size: 16pt; padding: 5px; } \
+    table td, table th { border: 1px solid black; } \
+    .entry-field-label { width: 100px; padding: 2px; } \
+    .entry-field-value { font-family: Menlo; padding: 2px; max-width: 700px; word-wrap: break-word; } \
+    </style></head>";
 
 @interface DatabaseModel ()
 
-@property (nonatomic, strong) StrongboxDatabase* theSafe;
-@property (nonatomic, strong) id<AbstractDatabaseFormatAdaptor> adaptor;
+@property (nonatomic, readonly) NSMutableDictionary<NSUUID*, NSDate*> *mutableDeletedObjects;
+@property (nonatomic) NSDictionary<NSUUID*, NodeIcon*> *backingIconPool;
+@property (nonatomic) DatabaseFormat format;
+@property (nonatomic, nonnull, readonly) UnifiedDatabaseMetadata* metadata;
+@property (readonly) FastMaps* fastMaps;
+
+@property (readonly) id<ApplicationPreferences> preferences;
 
 @end
 
 @implementation DatabaseModel
 
-+ (NSData *)getYubikeyChallenge:(NSData *)candidate error:(NSError **)error  {
-    if(candidate == nil) {
+- (instancetype)init {
+    return [self initWithFormat:kDefaultDatabaseFormat];
+}
+
+- (instancetype)clone {
+    CompositeKeyFactors* ckfClone = [self.ckfs clone];
+    UnifiedDatabaseMetadata* metadataClone = [self.metadata clone];
+    Node* treeClone = [self.rootNode clone:YES];
+    
+    return [[DatabaseModel alloc] initWithFormat:self.originalFormat
+                             compositeKeyFactors:ckfClone
+                                        metadata:metadataClone
+                                            root:treeClone
+                                  deletedObjects:self.deletedObjects
+                                        iconPool:self.iconPool];
+}
+
+- (instancetype)initWithFormat:(DatabaseFormat)format {
+    return [self initWithFormat:format
+            compositeKeyFactors:CompositeKeyFactors.unitTestDefaults];
+}
+
+- (instancetype)initWithCompositeKeyFactors:(CompositeKeyFactors *)compositeKeyFactors {
+    return [self initWithFormat:kDefaultDatabaseFormat
+            compositeKeyFactors:compositeKeyFactors];
+}
+
+- (instancetype)initWithFormat:(DatabaseFormat)format
+           compositeKeyFactors:(CompositeKeyFactors*)compositeKeyFactors {
+    return [self initWithFormat:format
+            compositeKeyFactors:compositeKeyFactors
+                       metadata:[UnifiedDatabaseMetadata withDefaultsForFormat:format]];
+}
+
+- (instancetype)initWithFormat:(DatabaseFormat)format
+           compositeKeyFactors:(CompositeKeyFactors *)compositeKeyFactors
+                      metadata:(UnifiedDatabaseMetadata*)metadata
+{
+    return [self initWithFormat:format
+            compositeKeyFactors:compositeKeyFactors
+                       metadata:metadata
+                           root:nil];
+}
+
+- (instancetype)initWithFormat:(DatabaseFormat)format
+           compositeKeyFactors:(CompositeKeyFactors *)compositeKeyFactors
+                      metadata:(UnifiedDatabaseMetadata *)metadata
+                          root:(Node *)root {
+    return [self initWithFormat:format
+            compositeKeyFactors:compositeKeyFactors
+                       metadata:metadata
+                           root:root
+                 deletedObjects:@{}
+                       iconPool:@{}];
+}
+
+- (instancetype)initWithFormat:(DatabaseFormat)format
+           compositeKeyFactors:(CompositeKeyFactors *)compositeKeyFactors
+                      metadata:(UnifiedDatabaseMetadata*)metadata
+                          root:(Node *_Nullable)root
+                deletedObjects:(NSDictionary<NSUUID *,NSDate *> *)deletedObjects
+                      iconPool:(NSDictionary<NSUUID *,NodeIcon *> *)iconPool {
+    if (self = [super init]) {
+        _format = format;
+        _ckfs = compositeKeyFactors;
+        _metadata = metadata;
+        
+        _rootNode = root ? root : [self initializeRoot];
+        [self rebuildFastMaps];
+        
+        _mutableDeletedObjects = deletedObjects.mutableCopy;
+        _backingIconPool = iconPool.mutableCopy;
+    }
+    return self;
+}
+
+
+
+- (Node*)   initializeRoot {
+    Node* rootGroup = [[Node alloc] initAsRoot:nil childRecordsAllowed:self.format != kKeePass1];
+    
+    if (self.format != kPasswordSafe) {
+        
+        
+        
+        NSString *rootGroupName = NSLocalizedString(@"generic_database", @"Database");
+        if ([rootGroupName isEqualToString:@"generic_database"]) { 
+            rootGroupName = kDefaultRootGroupName;
+        }
+        Node* keePassRootGroup = [[Node alloc] initAsGroup:rootGroupName parent:rootGroup keePassGroupTitleRules:YES uuid:nil];
+        
+        [self addChildren:@[keePassRootGroup] destination:rootGroup];
+    }
+    
+    return rootGroup;
+}
+
+
+
+- (id<ApplicationPreferences>)preferences {
+    return CrossPlatformDependencies.defaults.applicationPreferences;
+}
+
+
+
+- (NSArray<KeePassAttachmentAbstractionLayer *> *)attachmentPool {
+    return [MinimalPoolHelper getMinimalAttachmentPool:self.rootNode];
+}
+
+- (NSDictionary<NSUUID *,NodeIcon *> *)iconPool {
+    const BOOL stripUnusedIcons = self.preferences.stripUnusedIconsOnSave;
+    const BOOL stripUnusedHistoricalIcons = self.preferences.stripUnusedIconsOnSave;
+    
+    NSArray<Node*>* allNodes = [self getAllNodesReferencingCustomIcons:self.rootNode includeHistorical:!stripUnusedHistoricalIcons];
+    
+    
+    
+    
+    
+    NSMutableDictionary<NSUUID*, NodeIcon*>* newIconPool = stripUnusedIcons ? @{}.mutableCopy : self.backingIconPool.mutableCopy;
+    
+    for (Node* node in allNodes) {
+        NodeIcon* icon = node.icon;
+        
+        if ( newIconPool[icon.uuid] == nil ) {
+            
+            newIconPool[icon.uuid] = icon;
+        }
+    }
+    
+    
+    
+    self.backingIconPool = newIconPool.copy;
+    
+    return self.backingIconPool.copy;
+}
+
+- (NSArray<Node*>*)getAllNodesReferencingCustomIcons:(Node *)root includeHistorical:(BOOL)includeHistorical {
+    NSArray<Node*>* currentCustomIconNodes = [root filterChildren:YES predicate:^BOOL(Node * _Nonnull node) {
+        return node.icon != nil && node.icon.isCustom;
+    }];
+    
+    if ( !includeHistorical ) {
+        return currentCustomIconNodes;
+    }
+    
+    NSArray<Node*>* allNodesWithHistoryAndCustomIcons = [root filterChildren:YES predicate:^BOOL(Node * _Nonnull node) {
+        return !node.isGroup && [node.fields.keePassHistory anyMatch:^BOOL(Node * _Nonnull obj) {
+            return obj.icon != nil && obj.icon.isCustom;
+        }];
+    }];
+    
+    NSArray<Node*>* allHistoricalNodesWithCustomIcons = [allNodesWithHistoryAndCustomIcons flatMap:^id _Nonnull(Node * _Nonnull node, NSUInteger idx) {
+        return [node.fields.keePassHistory filter:^BOOL(Node * _Nonnull obj) {
+            return obj.icon != nil && obj.icon.isCustom;
+        }];
+    }];
+    
+    NSMutableArray *customIconNodes = [NSMutableArray arrayWithArray:currentCustomIconNodes];
+    [customIconNodes addObjectsFromArray:allHistoricalNodesWithCustomIcons];
+    
+    return customIconNodes;
+}
+
+- (DatabaseFormat)originalFormat {
+    return self.format;
+}
+
+- (void)changeKeePassFormat:(DatabaseFormat)newFormat {
+    if ( self.format == kKeePass || self.format == kKeePass4 ) {
+        self.format = newFormat;
+    }
+}
+
+- (UnifiedDatabaseMetadata *)meta {
+    return self.metadata;
+}
+
+- (Node *)effectiveRootGroup {
+    if ( self.format == kKeePass || self.format == kKeePass4 ) {
+        
+        
+        
+        
+        
+        
+        if(self.rootNode.children.count > 0) {
+            return [self.rootNode.children objectAtIndex:0];
+        }
+        else {
+            return self.rootNode; 
+        }
+    }
+    else {
+        return self.rootNode;
+    }
+}
+
+- (BOOL)isUsingKeePassGroupTitleRules {
+    return self.format != kPasswordSafe;
+}
+
+- (NSURL *)launchableUrlForItem:(Node *)item {
+    NSString *urlString = [self dereference:item.fields.url node:item];
+    
+    return [self launchableUrlForUrlString:urlString];
+}
+
+- (NSURL *)launchableUrlForUrlString:(NSString*)urlString {
+    if (!urlString.length) {
         return nil;
     }
     
-    NSError* validityError;
-    if([PwSafeDatabase isAValidSafe:candidate error:&validityError]) {
-        return nil; // NOT Supported
-    }
-    else if ([KeePassDatabase isAValidSafe:candidate error:&validityError]) {
-        return [KeePassDatabase getYubikeyChallenge:candidate error:error];
-    }
-    else if([Kdbx4Database isAValidSafe:candidate error:&validityError]) {
-        return [Kdbx4Database getYubikeyChallenge:candidate error:error];
-    }
-    else if([Kdb1Database isAValidSafe:candidate error:&validityError]) {
-        return nil;  // NOT Supported
+    NSURL* url = urlString.urlExtendedParse;
+    if (!url) {
+        return nil;
     }
     
-    return nil;
+    NSURLComponents* components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
+    
+    if ( !components.scheme.length ) { 
+        urlString = [NSString stringWithFormat:@"https:
+        url = urlString.urlExtendedParse;
+    }
+    
+    return url;
 }
 
-+ (BOOL)    isAValidSafe:(nullable NSData *)candidate error:(NSError**)error {
-    if(candidate == nil) {
-        if(error) {
-            *error = [Utils createNSError:@"Database Data is Nil" errorCode:-1];
-        }
-        return NO;
-    }
-    if(candidate.length == 0) {
-        if(error) {
-            *error = [Utils createNSError:@"Database Data is zero length" errorCode:-1];
-        }
-        return NO;
-    }
 
-    NSError *pw, *k1, *k2, *k3;
+
+
+- (void)addHistoricalNode:(Node *)item {
+    Node* cloneForHistory = [item cloneForHistory];
+    [self addHistoricalNode:item originalNodeForHistory:cloneForHistory];
+}
+
+- (void)addHistoricalNode:(Node*)item originalNodeForHistory:(Node*)originalNodeForHistory {
+    BOOL shouldAddHistory = YES; 
     
-    BOOL ret = [PwSafeDatabase isAValidSafe:candidate error:&pw] ||
-          [KeePassDatabase isAValidSafe:candidate error:&k1] ||
-          [Kdbx4Database isAValidSafe:candidate error:&k2] ||
-          [Kdb1Database isAValidSafe:candidate error:&k3];
+    if(shouldAddHistory && !item.isGroup && originalNodeForHistory != nil) {
+        [item.fields.keePassHistory addObject:originalNodeForHistory];
+    }
+    
+    
+}
 
-    if(!ret && error) {
-        NSString* errorSummary = @"Could not recognise this a valid Database:\n";
+
+
+- (BOOL)setItemTitle:(Node *)item title:(NSString *)title {
+    Node* originalNodeForHistory = [item cloneForHistory];
+    
+    BOOL ret = [item setTitle:title keePassGroupTitleRules:self.isUsingKeePassGroupTitleRules];
+    
+    if (ret) {
+        [self addHistoricalNode:item originalNodeForHistory:originalNodeForHistory];
+        [item touch:YES touchParents:NO];
         
-        errorSummary = [errorSummary stringByAppendingFormat:@"- Password Safe: %@\n", pw.localizedDescription];
-        errorSummary = [errorSummary stringByAppendingFormat:@"- KeePass Classic: %@\n", k1.localizedDescription];
-        errorSummary = [errorSummary stringByAppendingFormat:@"- KeePass Advanced: %@\n", k2.localizedDescription];
-        errorSummary = [errorSummary stringByAppendingFormat:@"- KeePass 1: %@\n", k3.localizedDescription];
-        
-        *error = [Utils createNSError:errorSummary errorCode:-1];
+        [self rebuildFastMaps];
     }
     
     return ret;
 }
 
-const NSUInteger kProbablyTooLargeToOpenInAutoFillSizeBytes = 3 * 1024 * 1024;
+- (BOOL)addTag:(NSUUID*)itemId tag:(NSString*)tag {
+    return [self addTagToItems:@[itemId] tag:tag];
+}
 
-+ (BOOL)isAutoFillLikelyToCrash:(NSData*)data {
-    // Argon 2 Memory Consumption
+- (BOOL)removeTag:(NSUUID*)itemId tag:(NSString*)tag {
+    return [self removeTagFromItems:@[itemId] tag:tag];
+}
+
+- (void)deleteTag:(NSString*)tag {
+    NSArray<NSUUID*>* ids = [self getItemIdsForTag:tag];
     
-    if([Kdbx4Database isAValidSafe:data error:nil]) {
-        CryptoParameters* params = [Kdbx4Serialization getCryptoParams:data];
+    [self removeTagFromItems:ids tag:tag];
+}
+
+- (void)renameTag:(NSString*)from to:(NSString*)to {
+    NSArray<NSUUID*>* ids = [self getItemIdsForTag:from];
+    
+    [self removeTagFromItems:ids tag:from touchAndAddHistory:NO];
+    
+    [self addTagToItems:ids tag:to];
+}
+
+- (BOOL)addTagToItems:(NSArray<NSUUID *> *)ids tag:(NSString *)tag {
+    BOOL modifiedSomething = NO;
+    
+    NSArray<Node*>* items = [self getItemsById:ids];
+    
+    for (Node* item in items) {
+        if ( [item.fields.tags containsObject:tag] ) {
+            continue;
+        }
         
-        if(params && params.kdfParameters && [params.kdfParameters.uuid isEqual:argon2CipherUuid()]) {
-            static NSString* const kParameterMemory = @"M";
-            static uint64_t const kMaxArgon2Memory =  64 * 1024 * 1024;
-                        
-            VariantObject* vo = params.kdfParameters.parameters[kParameterMemory];
-            if(vo && vo.theObject) {
-                uint64_t memory = ((NSNumber*)vo.theObject).longLongValue;
-                if(memory > kMaxArgon2Memory) {
-                    return YES;
-                }
+        [self addHistoricalNode:item];
+        [item touch:YES touchParents:NO];
+        modifiedSomething = YES;
+        
+        [item.fields.tags addObject:tag];
+    }
+    
+    [self rebuildFastMaps];
+    
+    return modifiedSomething;
+}
+
+- (BOOL)removeTagFromItems:(NSArray<NSUUID *> *)ids tag:(NSString *)tag {
+    return [self removeTagFromItems:ids tag:tag touchAndAddHistory:YES];
+}
+
+- (BOOL)removeTagFromItems:(NSArray<NSUUID *> *)ids tag:(NSString *)tag touchAndAddHistory:(BOOL)touchAndAddHistory {
+    BOOL modifiedSomething = NO;
+    NSArray<Node*>* items = [self getItemsById:ids];
+    
+    for (Node* item in items) {
+        if ( ![item.fields.tags containsObject:tag] ) {
+            continue;
+        }
+        
+        if ( touchAndAddHistory ) {
+            [self addHistoricalNode:item];
+            [item touch:YES touchParents:NO];
+            modifiedSomething = YES;
+        }
+        
+        [item.fields.tags removeObject:tag];
+    }
+    
+    [self rebuildFastMaps];
+    
+    return modifiedSomething;
+}
+
+
+
+- (BOOL)validateMoveItems:(const NSArray<Node*>*)items destination:(Node*)destination {
+    NSArray<Node*>* minimalItems = [self getMinimalNodeSet:items].allObjects;
+    
+    BOOL invalid = [minimalItems anyMatch:^BOOL(Node * _Nonnull obj) {
+        return obj.parent == nil || ![obj validateChangeParent:destination keePassGroupTitleRules:self.isUsingKeePassGroupTitleRules];
+    }];
+    
+    return !invalid;
+}
+
+- (BOOL)moveItems:(const NSArray<Node *> *)items destination:(Node*)destination {
+    return [self moveItems:items destination:destination date:NSDate.date undoData:nil];
+}
+
+- (BOOL)moveItems:(const NSArray<Node *> *)items destination:(Node*)destination undoData:(NSArray<NodeHierarchyReconstructionData*>**)undoData {
+    return [self moveItems:items destination:destination date:NSDate.date undoData:undoData];
+}
+
+- (BOOL)moveItems:(const NSArray<Node *> *_Nonnull)items
+      destination:(Node*_Nonnull)destination
+             date:(NSDate*_Nonnull)date
+         undoData:(NSArray<NodeHierarchyReconstructionData*>**)undoData {
+    NSArray<Node*>* minimalItems = [self getMinimalNodeSet:items].allObjects;
+    
+    BOOL invalid = [minimalItems anyMatch:^BOOL(Node * _Nonnull obj) {
+        return obj.parent == nil || ![obj validateChangeParent:destination keePassGroupTitleRules:self.isUsingKeePassGroupTitleRules];
+    }];
+    
+    if (invalid) {
+        return NO;
+    }
+    
+    if (undoData) {
+        *undoData = [self getHierarchyCloneForReconstruction:items];
+    }
+    
+    
+    
+    
+    BOOL rollback = NO;
+    
+    NSMutableArray<Node*> *rollbackTo = NSMutableArray.array;
+    for(Node* itemToMove in minimalItems) {
+        [rollbackTo addObject:itemToMove.parent];
+        
+        if(![itemToMove changeParent:destination keePassGroupTitleRules:self.isUsingKeePassGroupTitleRules]) {
+            rollback = YES;
+            slog(@"Error Changing Parents. [%@]", itemToMove);
+            break;
+        }
+    }
+    
+    if (rollback) {
+        int i = 0;
+        for (Node* previousParent in rollbackTo) {
+            [minimalItems[i++] changeParent:previousParent keePassGroupTitleRules:self.isUsingKeePassGroupTitleRules];
+        }
+    }
+    else {
+        for(Node* itemToMove in minimalItems) { 
+            [itemToMove touchLocationChanged:date]; 
+        }
+    }
+    
+    [self rebuildFastMaps]; 
+    
+    return !rollback;
+}
+
+- (void)undoMove:(NSArray<NodeHierarchyReconstructionData*>*)undoData {
+    
+    
+    
+    
+    for (NodeHierarchyReconstructionData* reconItem in undoData) {
+        Node* originalMovedItem = [self getItemById:reconItem.clonedNode.uuid];
+        
+        if (originalMovedItem && originalMovedItem.parent ) {
+            [originalMovedItem.parent removeChild:originalMovedItem];
+        }
+        else {
+            
+            slog(@"WARNWARN: Could not find original moved item! [%@]", reconItem);
+        }
+    }
+    
+    
+    
+    [self reconstruct:undoData];
+}
+
+
+
+- (BOOL)validateAddChild:(Node *)item destination:(Node *)destination {
+    return [self validateAddChildren:@[item] destination:destination];
+}
+
+- (BOOL)validateAddChildren:(NSArray<Node *>*)items destination:(Node *)destination {
+    if ( items == nil || destination == nil ) {
+        return NO;
+    }
+    
+    for ( Node* item in items ) {
+        if (! [destination validateAddChild:item keePassGroupTitleRules:self.isUsingKeePassGroupTitleRules] ) {
+            return NO;
+        }
+    }
+    
+    return YES;
+}
+
+- (BOOL)addChildren:(NSArray<Node *> *)items destination:(Node *)destination {
+    return [self addChildren:items destination:destination suppressFastMapsRebuild:NO];
+}
+
+- (BOOL)addChildren:(NSArray<Node *> *)items destination:(Node *)destination suppressFastMapsRebuild:(BOOL)suppressFastMapsRebuild {
+    return [self insertChildren:items destination:destination atPosition:-1 suppressFastMapsRebuild:suppressFastMapsRebuild];
+}
+
+- (BOOL)insertChild:(Node *)item destination:(Node *)destination atPosition:(NSInteger)position {
+    return [self insertChildren:@[item] destination:destination atPosition:position];
+}
+
+- (BOOL)insertChildren:(NSArray<Node *>*)items
+           destination:(Node *)destination
+            atPosition:(NSInteger)position {
+    return [self insertChildren:items destination:destination atPosition:position suppressFastMapsRebuild:NO];
+}
+
+- (BOOL)insertChildren:(NSArray<Node *> *)items destination:(Node *)destination atPosition:(NSInteger)position suppressFastMapsRebuild:(BOOL)suppressFastMapsRebuild {
+    if ( ![self validateAddChildren:items destination:destination] ) {
+        return NO;
+    }
+    
+    if ( items == nil || destination == nil ) {
+        return NO;
+    }
+    
+    for ( Node* item in items ) {
+        if ( ![destination insertChild:item keePassGroupTitleRules:self.isUsingKeePassGroupTitleRules atPosition:position] ) {
+            slog(@"🔴 Error inserting child item!");
+        }
+    }
+    
+    if ( !suppressFastMapsRebuild ) {
+        [self rebuildFastMaps];
+    }
+    
+    return YES;
+}
+
+- (void)removeChildren:(NSArray<NSUUID *>*)itemIds {
+    if ( itemIds == nil ) {
+        return;
+    }
+    
+    NSArray<Node*>* items = [self getItemsById:itemIds];
+    for ( Node* item in items ) {
+        if ( item && item.parent ) {
+            [item.parent removeChild:item];
+        }
+        else {
+            slog(@"🔴 WARN: Not removing Node from Parent (at least one is nil) [node=%@, parent=%@]", item, item.parent);
+        }
+    }
+    
+    [self rebuildFastMaps];
+}
+
+
+
+- (NSInteger)reorderItem:(NSUUID*)nodeId idx:(NSInteger)idx {
+    Node* node = [self getItemById:nodeId];
+    
+    if ( node ) {
+        return [self reorderItem:node to:idx];
+    }
+    
+    slog(@"🔴 reorderItem - failed could not find item");
+    
+    return -1;
+}
+
+- (NSInteger)reorderChildFrom:(NSUInteger)from to:(NSInteger)to parentGroup:(Node *)parentGroup {
+    
+    
+    if (from < 0 || from >= parentGroup.children.count) {
+        return -1;
+    }
+    if(from == to) {
+        return from;
+    }
+    
+    
+    
+    Node* item = parentGroup.children[from];
+    
+    return [self reorderItem:item to:to];
+}
+
+- (NSInteger)reorderItem:(Node *)item to:(NSInteger)to {
+    
+    
+    if (item.parent == nil) {
+        slog(@"WARNWARN: Cannot change order of item, parent is nil");
+        return -1;
+    }
+    
+    NSInteger currentIndex = [item.parent.children indexOfObject:item];
+    if (currentIndex == NSNotFound) {
+        slog(@"WARNWARN: Cannot change order of item, item not found in parent!");
+        return -1;
+    }
+    
+    if (to >= item.parent.children.count || to < -1) {
+        to = -1;
+    }
+    
+    
+    BOOL ret = [item.parent reorderChild:item to:to keePassGroupTitleRules:self.isUsingKeePassGroupTitleRules];
+    
+    if (ret) {
+        [item touchLocationChanged];
+    }
+    else {
+        return -1;
+    }
+    
+    
+    
+    return currentIndex;
+}
+
+
+
+- (void)setDeletedObjects:(NSDictionary<NSUUID *,NSDate *> *)deletedObjects {
+    [self.mutableDeletedObjects removeAllObjects];
+    [self.mutableDeletedObjects addEntriesFromDictionary:deletedObjects];
+}
+
+- (void)reconstruct:(NSArray<NodeHierarchyReconstructionData*>*)undoData {
+    for (NodeHierarchyReconstructionData* recon in undoData) {
+        Node* parent = recon.clonedNode.parent;
+        
+        if (!parent) {
+            continue; 
+        }
+        
+        [parent insertChild:recon.clonedNode keePassGroupTitleRules:self.isUsingKeePassGroupTitleRules atPosition:-1];
+        
+        NSUInteger currentIndex = parent.children.count - 1;
+        if (currentIndex != recon.index) {
+            if (! [parent reorderChildAt:currentIndex to:recon.index keePassGroupTitleRules:self.isUsingKeePassGroupTitleRules] ) {
+                slog(@"WARNWARN: Could not reorder child from %lu to %lu during reconstruction.", (unsigned long)currentIndex, (unsigned long)recon.index);
             }
         }
     }
     
-    // Very large DBs
-    
-    if (data.length > kProbablyTooLargeToOpenInAutoFillSizeBytes) {
-        return YES;
-    }
-
-    return NO;
+    [self rebuildFastMaps];
 }
 
-+ (DatabaseFormat)getLikelyDatabaseFormat:(NSData *)candidate {
-    if(candidate == nil) {
-        return kFormatUnknown;
-    }
+- (void)unDelete:(NSArray<NodeHierarchyReconstructionData*>*)undoData {
+    [self reconstruct:undoData];
     
-    NSError* error;
-    if([PwSafeDatabase isAValidSafe:candidate error:&error]) {
-        return kPasswordSafe;
-    }
-    else if ([KeePassDatabase isAValidSafe:candidate error:&error]) {
-        return kKeePass;
-    }
-    else if([Kdbx4Database isAValidSafe:candidate error:&error]) {
-        return kKeePass4;
-    }
-    else if([Kdb1Database isAValidSafe:candidate error:&error]) {
-        return kKeePass1;
-    }
-    
-    return kFormatUnknown;
-}
-
-+ (NSString*)getLikelyFileExtension:(NSData *)candidate {
-    if(candidate == nil) {
-        return @"dat";
-    }
-    
-    NSError* error;
-    if([PwSafeDatabase isAValidSafe:candidate error:&error]) {
-        return [PwSafeDatabase fileExtension];
-    }
-    else if ([KeePassDatabase isAValidSafe:candidate error:&error]) {
-        return [KeePassDatabase fileExtension];
-    }
-    else if([Kdbx4Database isAValidSafe:candidate error:&error]) {
-        return [Kdbx4Database fileExtension];
-    }
-    else if([Kdb1Database isAValidSafe:candidate error:&error]) {
-        return [Kdb1Database fileExtension];
-    }
-    
-    return @"dat";
-}
-
-+ (id<AbstractDatabaseFormatAdaptor>)getAdaptor:(DatabaseFormat)format {
-    if(format == kPasswordSafe) {
-        return [[PwSafeDatabase alloc] init];
-    }
-    else if(format == kKeePass) {
-        return [[KeePassDatabase alloc] init];
-    }
-    else if(format == kKeePass4) {
-        return [[Kdbx4Database alloc] init];
-    }
-    else if(format == kKeePass1) {
-        return [[Kdb1Database alloc] init];
-    }
-    
-    NSLog(@"WARN: No such adaptor for format!");
-    return nil;
-}
-
-- (instancetype)initNew:(CompositeKeyFactors *)compositeKeyFactors format:(DatabaseFormat)format {
-    if(self = [super init]) {
-        self.adaptor = [DatabaseModel getAdaptor:format];
-        self.theSafe = [self.adaptor create:compositeKeyFactors];
+    for (NodeHierarchyReconstructionData* recon in undoData) {
         
-        if (self.theSafe == nil) {
-            return nil;
-        }
+        NSArray<NSUUID*>* childIds = [recon.clonedNode.allChildren map:^id _Nonnull(Node * _Nonnull obj, NSUInteger idx) {
+            return obj.uuid;
+        }];
         
-        if(format != kKeePass1) {
-            [self addSampleGroupAndRecordToRoot];
+        [self.mutableDeletedObjects removeObjectForKey:recon.clonedNode.uuid];
+        [self.mutableDeletedObjects removeObjectsForKeys:childIds];
+    }
+}
+
+- (BOOL)deleteAllGroupItems:(Node*)group deletionDate:(NSDate*)deletionDate {
+    BOOL deletedSomething = NO;
+    
+    for (Node* entry in group.childRecords) {
+        if ( entry && entry.parent ) {
+            [entry.parent removeChild:entry];
+            deletedSomething = YES;
+            self.mutableDeletedObjects[entry.uuid] = deletionDate;
         }
         else {
-            Node *parent = self.theSafe.rootGroup.childGroups[0];
-            addSampleGroupAndRecordToGroup(parent);
+            slog(@"🔴 WARN: Not removing Node from Parent (at least one is nil) [node=%@, parent=%@]", entry, entry.parent);
         }
     }
     
-    return self;
-}
-
-- (instancetype)initExisting:(NSData *)data compositeKeyFactors:(CompositeKeyFactors *)compositeKeyFactors error:(NSError **)ppError {
-    if(self = [super init]) {
-        if(data == nil) {
-            return nil;
+    for (Node* subgroup in group.childGroups) {
+        if ([self deleteAllGroupItems:subgroup deletionDate:deletionDate] ) {
+            deletedSomething = YES;
         }
         
-        if([PwSafeDatabase isAValidSafe:data error:ppError]) {
-            self.adaptor = [[PwSafeDatabase alloc] init];
+        self.mutableDeletedObjects[subgroup.uuid] = deletionDate;
+    }
+    
+    return deletedSomething;
+}
+
+- (void)deleteItems:(const NSArray<Node *> *)items {
+    [self deleteItems:items undoData:nil];
+}
+
+- (void)deleteItems:(const NSArray<Node *> *)items undoData:(NSArray<NodeHierarchyReconstructionData*>**)undoData {
+    NSDate* now = NSDate.date;
+    NSSet<Node*> *minimalNodeSet = [self getMinimalNodeSet:items];
+    
+    if (undoData) {
+        *undoData = [self getHierarchyCloneForReconstruction:items];
+    }
+    
+    BOOL deletedSomething = NO;
+    
+    for (Node* item in minimalNodeSet) {
+        if (item.parent == nil || ![item.parent contains:item]) { 
+            slog(@"WARNWARN: Attempt to delete item with no parent");
+            return;
         }
-        else if([KeePassDatabase isAValidSafe:data error:ppError]) {
-            self.adaptor = [[KeePassDatabase alloc] init];
+        
+        if ( item.isGroup ) {
+            if ( [self deleteAllGroupItems:item deletionDate:now] ) {
+                deletedSomething = YES;
+            }
         }
-        else if([Kdbx4Database isAValidSafe:data error:ppError]) {
-            self.adaptor = [[Kdbx4Database alloc] init];
-        }
-        else if([Kdb1Database isAValidSafe:data error:ppError]) {
-            self.adaptor = [[Kdb1Database alloc] init];
+        
+        if ( item && item.parent ) {
+            [item.parent removeChild:item];
+            deletedSomething = YES;
         }
         else {
-            return nil;
+            slog(@"🔴 WARN: Not removing Node from Parent (at least one is nil) [node=%@, parent=%@]", item, item.parent);
         }
-
-        self.theSafe = [self.adaptor open:data compositeKeyFactors:compositeKeyFactors error:ppError];
         
-        if (self.theSafe == nil) {
-            return nil;
+        self.mutableDeletedObjects[item.uuid] = now;
+    }
+    
+    if ( deletedSomething ) { 
+        [self rebuildFastMaps];
+    }
+}
+
+- (BOOL)recycleItems:(const NSArray<Node *> *)items {
+    return [self recycleItems:items undoData:nil];
+}
+
+- (BOOL)recycleItems:(const NSArray<Node *> *)items undoData:(NSArray<NodeHierarchyReconstructionData*>**)undoData {
+    if (!self.recycleBinEnabled) {
+        slog(@"🔴 WARNWARN: Attempt to recycle item when recycle bin disabled!");
+        return NO;
+    }
+    
+    if(self.recycleBinNode == nil) {     
+        [self createNewRecycleBinNode];
+    }
+    
+    NSDate* now = NSDate.date;
+    NSSet<Node*> *minimalNodeSet = [self getMinimalNodeSet:items];
+    
+    BOOL ret = [self moveItems:minimalNodeSet.allObjects destination:self.recycleBinNode date:now undoData:undoData];
+    
+    if (ret) {
+        for (Node* item in minimalNodeSet) { 
+            [item touchAt:now]; 
         }
     }
     
-    return self;
+    return ret;
 }
 
-- (NSData*)getAsData:(NSError**)error {
-    [self.theSafe performPreSerializationTidy]; // Tidy up attachments, custom icons, trim history
+- (void)undoRecycle:(NSArray<NodeHierarchyReconstructionData*>*)undoData {
+    [self undoMove:undoData];
+}
+
+- (void)setRecycleBinEnabled:(BOOL)recycleBinEnabled {
+    self.metadata.recycleBinEnabled = recycleBinEnabled;
     
-    return [self.adaptor save:self.theSafe error:error];
+    [self rebuildFastMaps];
 }
 
-- (void)addSampleGroupAndRecordToRoot {
-    addSampleGroupAndRecordToGroup(self.rootGroup);
-}
-
-void addSampleGroupAndRecordToGroup(Node* parent) {
-    PasswordGenerationConfig* config = Settings.sharedInstance.passwordGenerationConfig;
-    NSString* password = [PasswordMaker.sharedInstance generateForConfigOrDefault:config];
-
-    Node* sampleFolder = [[Node alloc] initAsGroup:NSLocalizedString(@"model_sample_group_title", @"Sample Group")
-                                            parent:parent
-                         allowDuplicateGroupTitles:YES
-                                              uuid:nil];
+- (void)setRecycleBinNodeUuid:(NSUUID *)recycleBinNode {
+    self.metadata.recycleBinGroup = recycleBinNode;
     
-    [parent addChild:sampleFolder allowDuplicateGroupTitles:NO];
+    [self rebuildFastMaps];
+}
+
+- (void)setRecycleBinChanged:(NSDate *)recycleBinChanged {
+    self.metadata.recycleBinChanged = recycleBinChanged;
     
-    NodeFields *fields = [[NodeFields alloc] initWithUsername:NSLocalizedString(@"model_sample_entry_username", @"username")
-                                                          url:@"https://strongboxsafe.com"
-                                                     password:password
-                                                        notes:@""
-                                                        email:@"user@gmail.com"];
-
-    NSDate* date = [NSDate date];
-    fields.created = date;
-    fields.accessed = date;
-    fields.modified = date;
-
-    [sampleFolder addChild:[[Node alloc]    initAsRecord:NSLocalizedString(@"model_sample_entry_title", @"Sample")
-                                                  parent:sampleFolder
-                                                  fields:fields
-                                                    uuid:nil]
-      allowDuplicateGroupTitles:NO];
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-- (BOOL)isDereferenceableText:(NSString*)text {
-    return self.format != kPasswordSafe && [SprCompilation.sharedInstance isSprCompilable:text];
-}
-
-- (NSString*)maybeDeref:(NSString*)text node:(Node*)node maybe:(BOOL)maybe {
-    return maybe ? [self dereference:text node:node] : text;
-}
-
-- (NSString*)dereference:(NSString*)text node:(Node*)node {
-    if(self.format == kPasswordSafe || !text.length) {
-        return text;
-    }
-    
-    NSError* error;
-    
-    BOOL isCompilable = [SprCompilation.sharedInstance isSprCompilable:text];
-    
-    NSString* compiled = isCompilable ? [SprCompilation.sharedInstance sprCompile:text node:node rootNode:self.rootGroup error:&error] : text;
-    
-    if(error) {
-        NSLog(@"WARN: SPR Compilation ERROR: [%@]", error);
-    }
-    
-    return compiled ? compiled : @""; // Never return nil... just not expected at UI layer
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-- (NSString *)getGroupPathDisplayString:(Node *)vm {
-    NSMutableArray<NSString*> *hierarchy = [NSMutableArray array];
-    
-    Node* current = vm;
-    while (current != nil && current != self.rootGroup) {
-        [hierarchy insertObject:current.title atIndex:0];
-        current = current.parent;
-    }
-    
-    return hierarchy.count ? [hierarchy componentsJoinedByString:@"/"] : @"/";
-}
-
-- (NSString *)getSearchParentGroupPathDisplayString:(Node *)vm {
-    if(!vm || vm.parent == nil || vm.parent == self.rootGroup) {
-        return @"/";
-    }
-    
-    NSMutableArray<NSString*> *hierarchy = [NSMutableArray array];
-    
-    Node* current = vm;
-    while (current.parent != nil && current.parent != self.rootGroup) {
-        [hierarchy insertObject:current.parent.title atIndex:0]; 
-        current = current.parent;
-    }
-    
-    NSString *path = [hierarchy componentsJoinedByString:@"/"];
-    
-    return path;
-}
-
-- (Node*)rootGroup {
-    if(self.format == kKeePass || self.format == kKeePass4) {
-        // Hide the root group - Can not add entries and not really useful - Perhaps make this optional?
-        // Later discovery: KeePass 1 allows multiple root groups but no entries to root, Had to put in
-        // Code to block root entry additions, meaning that we could display the root group here if we
-        // wanted to, and block entries. For the moment, happy to hide the root group for KeePass 3 and 4
-        // we'll see if there is some feedback on this. Root Group seems to be pretty useless
-        
-        if(self.theSafe.rootGroup.children.count > 0) {
-            return [self.theSafe.rootGroup.children objectAtIndex:0];
-        }
-        else {
-            return self.theSafe.rootGroup; // This should never be able to happen but for safety
-        }
-    }
-    else {
-        return self.theSafe.rootGroup;
-    }
-}
-
-- (DatabaseFormat)format {
-    return self.adaptor.format;
-}
-
-- (NSString *)fileExtension {
-    return self.adaptor.fileExtension;
-}
-
--(id<AbstractDatabaseMetadata>)metadata {
-    return self.theSafe.metadata;
-}
-
--(NSArray<DatabaseAttachment *> *)attachments {
-    return self.theSafe.attachments;
-}
-
-- (NSDictionary<NSUUID *,NSData *> *)customIcons {
-    return self.theSafe.customIcons;
-}
-
-- (void)addNodeAttachment:(Node *)node attachment:(UiAttachment*)attachment {
-    [self addNodeAttachment:node attachment:attachment rationalize:YES];
-}
-
-- (void)addNodeAttachment:(Node *)node attachment:(UiAttachment*)attachment rationalize:(BOOL)rationalize {
-    [self.theSafe addNodeAttachment:node attachment:attachment rationalize:rationalize];
-}
-
-- (void)removeNodeAttachment:(Node *)node atIndex:(NSUInteger)atIndex {
-    [self.theSafe removeNodeAttachment:node atIndex:atIndex];
-}
-
-- (void)setNodeAttachments:(Node *)node attachments:(NSArray<UiAttachment *> *)attachments {
-    [self.theSafe setNodeAttachments:node attachments:attachments];
-}
-
-- (void)setNodeCustomIcon:(Node *)node data:(NSData *)data rationalize:(BOOL)rationalize {
-    [self.theSafe setNodeCustomIcon:node data:data rationalize:rationalize];
-}
-
-- (BOOL)recycleBinEnabled {
-    return self.theSafe.recycleBinEnabled;
-}
-
-- (Node*)recycleBinNode {
-    return self.theSafe.recycleBinNode;
+    [self rebuildFastMaps];
 }
 
 - (void)createNewRecycleBinNode {
-    [self.theSafe createNewRecycleBinNode];
+    NSString* title = NSLocalizedString(@"generic_recycle_bin_name", @"Recycle Bin");
+    
+    Node* recycleBin = [[Node alloc] initAsGroup:title parent:self.effectiveRootGroup keePassGroupTitleRules:self.isUsingKeePassGroupTitleRules uuid:nil];
+    
+    recycleBin.icon = [NodeIcon withPreset:43];
+    
+    
+    
+    recycleBin.fields.enableSearching = @(NO);
+    recycleBin.fields.enableAutoType = @(NO);
+    
+    [self addChildren:@[recycleBin] destination:self.effectiveRootGroup];
+    
+    self.recycleBinNodeUuid = recycleBin.uuid;
+    self.recycleBinChanged = [NSDate date];
+    
+    [self rebuildFastMaps];
 }
 
-- (Node *)keePass1BackupNode {
-    return self.theSafe.keePass1BackupNode;
+
+
+
+- (NSArray<Node *> *)filterItems:(BOOL)includeGroups includeEntries:(BOOL)includeEntries searchableOnly:(BOOL)searchableOnly {
+    return [self filterItems:includeGroups includeEntries:includeEntries searchableOnly:searchableOnly includeExpired:YES];
 }
 
-////////////////////////////////////////////////////////////////////////////////////////////
-// Convenience
-
-- (NSArray<Node *>*)allNodes {
-    return [self.rootGroup filterChildren:YES predicate:nil];
+- (NSArray<Node *> *)filterItems:(BOOL)includeGroups includeEntries:(BOOL)includeEntries searchableOnly:(BOOL)searchableOnly includeExpired:(BOOL)includeExpired {
+    return [self filterItems:includeGroups includeEntries:includeEntries searchableOnly:searchableOnly includeExpired:includeExpired includeRecycled:NO];
 }
 
--(NSArray<Node *> *)allRecords {
-    return [self.rootGroup filterChildren:YES predicate:^BOOL(Node * _Nonnull node) {
-        return !node.isGroup;
+- (NSArray<Node *> *)filterItems:(BOOL)includeGroups includeEntries:(BOOL)includeEntries searchableOnly:(BOOL)searchableOnly includeExpired:(BOOL)includeExpired includeRecycled:(BOOL)includeRecycled {
+    return [self filterItems:includeGroups includeEntries:includeEntries searchableOnly:searchableOnly includeExpired:includeExpired includeRecycled:includeRecycled trueRoot:NO];
+}
+
+- (NSArray<Node *> *)filterItems:(BOOL)includeGroups
+                  includeEntries:(BOOL)includeEntries
+                  searchableOnly:(BOOL)searchableOnly
+                  includeExpired:(BOOL)includeExpired
+                 includeRecycled:(BOOL)includeRecycled
+                        trueRoot:(BOOL)trueRoot {
+    Node* root = trueRoot ? self.rootNode : self.effectiveRootGroup;
+    DatabaseFormat format = self.format;
+    Node* keePass1BackupNode = (format == kKeePass1) ? self.keePass1BackupNode : nil;
+    Node* kp2RecycleBin = (format == kKeePass || format == kKeePass4 ) ? self.recycleBinNode : nil;
+    Node* recycler = kp2RecycleBin ? kp2RecycleBin : keePass1BackupNode;
+    
+    return [root filterChildren:YES predicate:^BOOL(Node * _Nonnull node) {
+        if (!includeGroups && node.isGroup) {
+            return NO;
+        }
+        
+        if (!includeEntries && !node.isGroup) {
+            return NO;
+        }
+        
+        if ( searchableOnly ) {
+            if ( format == kKeePass || format == kKeePass4 ) {
+                if ( !node.isSearchable ) {
+                    return NO;
+                }
+            }
+        }
+        
+        if ( !includeRecycled ) {
+            if ( recycler != nil && (node == recycler || [recycler contains:node]) ) {
+                return NO;
+            }
+        }
+        
+        if ( !includeExpired && node.expired ) {
+            return NO;
+        }
+        
+        return YES;
     }];
 }
 
--(NSArray<Node *> *)allGroups {
-    return [self.rootGroup filterChildren:YES predicate:^BOOL(Node * _Nonnull node) {
-        return node.isGroup;
+- (StringSearchMatchType)isTitleMatches:(NSString*)searchText
+                                   node:(Node*)node
+                            dereference:(BOOL)dereference
+                            checkPinYin:(BOOL)checkPinYin {
+    NSString* foo = [self maybeDeref:node.title node:node maybe:dereference];
+    return [foo isSearchMatch:searchText checkPinYin:checkPinYin];
+}
+
+- (StringSearchMatchType)isUsernameMatches:(NSString*)searchText node:(Node*)node dereference:(BOOL)dereference  checkPinYin:(BOOL)checkPinYin {
+    NSString* foo = [self maybeDeref:node.fields.username node:node maybe:dereference];
+    return [foo isSearchMatch:searchText checkPinYin:checkPinYin];
+}
+
+- (StringSearchMatchType)isPasswordMatches:(NSString*)searchText node:(Node*)node dereference:(BOOL)dereference checkPinYin:(BOOL)checkPinYin {
+    NSString* foo = [self maybeDeref:node.fields.password node:node maybe:dereference];
+    return [foo isSearchMatch:searchText checkPinYin:checkPinYin];
+}
+
+- (StringSearchMatchType)isEmailMatches:(NSString*)searchText node:(Node*)node dereference:(BOOL)dereference checkPinYin:(BOOL)checkPinYin {
+    NSString* email = node.fields.email;
+    
+    NSString* foo = [self maybeDeref:email node:node maybe:dereference];
+    return [foo isSearchMatch:searchText checkPinYin:checkPinYin];
+}
+
+- (StringSearchMatchType)isNotesMatches:(NSString*)searchText node:(Node*)node dereference:(BOOL)dereference checkPinYin:(BOOL)checkPinYin {
+    NSString* foo = [self maybeDeref:node.fields.notes node:node maybe:dereference];
+    return [foo isSearchMatch:searchText checkPinYin:checkPinYin];
+}
+
+- (StringSearchMatchType)isTagsMatches:(NSString*)searchText node:(Node*)node checkPinYin:(BOOL)checkPinYin {
+    for ( NSString* tag in node.fields.tags ) {
+        StringSearchMatchType matchType = [tag isSearchMatch:searchText checkPinYin:checkPinYin];
+        if ( matchType != kStringSearchMatchTypeNoMatch ) {
+            return matchType;
+        }
+    }
+    
+    return kStringSearchMatchTypeNoMatch;
+}
+
+- (StringSearchMatchType)isPathMatches:(NSString*)searchText node:(Node*)node checkPinYin:(BOOL)checkPinYin {
+    Node* current = node;
+    while (current != nil && current != self.effectiveRootGroup) {
+        StringSearchMatchType matchType = [current.title isSearchMatch:searchText checkPinYin:checkPinYin];
+        
+        if ( matchType != kStringSearchMatchTypeNoMatch  ) {
+            return matchType;
+        }
+        
+        current = current.parent;
+    }
+    
+    return NO;
+}
+
+- (StringSearchMatchType)isUrlMatches:(NSString*)searchText
+                                 node:(Node*)node
+                          dereference:(BOOL)dereference
+                          checkPinYin:(BOOL)checkPinYin
+             includeAssociatedDomains:(BOOL)includeAssociatedDomains {
+    NSString* foo = [self maybeDeref:node.fields.url node:node maybe:dereference];
+    
+    StringSearchMatchType matchType = [self isDiscreteUrlMatch:foo searchText:searchText checkPinYin:checkPinYin includeAssociatedDomains:includeAssociatedDomains];
+    
+    if ( matchType != kStringSearchMatchTypeNoMatch  ) {
+        return matchType;
+    }
+    
+    for (NSString* altUrl in node.fields.alternativeUrls) {
+        NSString* foo = [self maybeDeref:altUrl node:node maybe:dereference];
+        
+        StringSearchMatchType matchType = [self isDiscreteUrlMatch:foo searchText:searchText checkPinYin:checkPinYin includeAssociatedDomains:includeAssociatedDomains];
+        
+        if ( matchType != kStringSearchMatchTypeNoMatch  ) {
+            return matchType;
+        }
+        
+    }
+    
+    return kStringSearchMatchTypeNoMatch;
+}
+
+- (StringSearchMatchType)isDiscreteUrlMatch:(NSString*)url searchText:(NSString*)searchText checkPinYin:(BOOL)checkPinYin includeAssociatedDomains:(BOOL)includeAssociatedDomains {
+    if ( [url.lowercaseString hasPrefix:kOtpAuthScheme] ) {
+        
+        
+        
+        return kStringSearchMatchTypeNoMatch;
+    }
+    
+    StringSearchMatchType matchType = [url isSearchMatch:searchText checkPinYin:checkPinYin];
+    
+    if ( matchType != kStringSearchMatchTypeNoMatch  ) {
+        return matchType;
+    }
+    
+    if ( includeAssociatedDomains ) {
+        NSSet<NSString*>* associateds = [BrowserAutoFillManager getAssociatedDomainsWithUrl:url];
+        for ( NSString* associated in associateds ) {
+            StringSearchMatchType matchType = [associated isSearchMatch:searchText checkPinYin:checkPinYin];
+            if ( matchType != kStringSearchMatchTypeNoMatch  ) {
+                return matchType;
+            }
+        }
+    }
+    
+    return kStringSearchMatchTypeNoMatch;
+}
+
+- (StringSearchMatchType)isAllFieldsMatches:(NSString*)searchText
+                                       node:(Node*)node
+                                dereference:(BOOL)dereference
+                                checkPinYin:(BOOL)checkPinYin
+                   includeAssociatedDomains:(BOOL)includeAssociatedDomains {
+    return [self isAllFieldsMatches:searchText node:node dereference:dereference checkPinYin:checkPinYin includeAssociatedDomains:includeAssociatedDomains matchField:nil];
+}
+
+- (StringSearchMatchType)isAllFieldsMatches:(NSString *)searchText
+                                       node:(Node *)node
+                                dereference:(BOOL)dereference
+                                checkPinYin:(BOOL)checkPinYin
+                   includeAssociatedDomains:(BOOL)includeAssociatedDomains
+                                 matchField:(DatabaseSearchMatchField *)matchField {
+    StringSearchMatchType matchType = [self isTitleMatches:searchText node:node dereference:dereference checkPinYin:checkPinYin];
+    if ( matchType != kStringSearchMatchTypeNoMatch  ) {
+        if ( matchField ) {
+            *matchField = kDatabaseSearchMatchFieldTitle;
+        }
+        return matchType;
+    }
+    matchType = [self isUsernameMatches:searchText node:node dereference:dereference checkPinYin:checkPinYin];
+    if ( matchType != kStringSearchMatchTypeNoMatch  ) {
+        if ( matchField ) {
+            *matchField = kDatabaseSearchMatchFieldUsername;
+        }
+        return matchType;
+    }
+    matchType = [self isPasswordMatches:searchText node:node dereference:dereference checkPinYin:checkPinYin];
+    if ( matchType != kStringSearchMatchTypeNoMatch  ) {
+        if ( matchField ) {
+            *matchField = kDatabaseSearchMatchFieldPassword;
+        }
+        
+        return matchType;
+    }
+    matchType = [self isEmailMatches:searchText node:node dereference:dereference checkPinYin:checkPinYin];
+    if ( matchType != kStringSearchMatchTypeNoMatch  ) {
+        if ( matchField ) {
+            *matchField = kDatabaseSearchMatchFieldEmail;
+        }
+        
+        return matchType;
+    }
+    matchType = [self isUrlMatches:searchText node:node dereference:dereference checkPinYin:checkPinYin includeAssociatedDomains:includeAssociatedDomains];
+    if ( matchType != kStringSearchMatchTypeNoMatch  ) {
+        if ( matchField ) {
+            *matchField = kDatabaseSearchMatchFieldUrl;
+        }
+        
+        return matchType;
+    }
+    matchType = [self isNotesMatches:searchText node:node dereference:dereference checkPinYin:checkPinYin];
+    if ( matchType != kStringSearchMatchTypeNoMatch  ) {
+        if ( matchField ) {
+            *matchField = kDatabaseSearchMatchFieldNotes;
+        }
+        
+        return matchType;
+    }
+    matchType = [self isTagsMatches:searchText node:node checkPinYin:checkPinYin];
+    if ( matchType != kStringSearchMatchTypeNoMatch  ) {
+        if ( matchField ) {
+            *matchField = kDatabaseSearchMatchFieldTag;
+        }
+        
+        return matchType;
+    }
+    
+    if (self.format == kKeePass4 || self.format == kKeePass) {
+        
+        
+        for (NSString* key in node.fields.customFields.allKeys) {
+            
+            if ( ![NodeFields isAlternativeURLCustomFieldKey:key] && ![NodeFields isTotpCustomFieldKey:key]) {
+                NSString* value = node.fields.customFields[key].value;
+                NSString* derefed = [self maybeDeref:value node:node maybe:dereference];
+                
+                
+                StringSearchMatchType matchType = [key isSearchMatch:searchText checkPinYin:checkPinYin];
+                
+                if ( matchType != kStringSearchMatchTypeNoMatch  ) {
+                    if ( matchField ) {
+                        *matchField = kDatabaseSearchMatchFieldCustomField;
+                    }
+                    
+                    return matchType;
+                }
+                
+                matchType = [derefed isSearchMatch:searchText checkPinYin:checkPinYin];
+                if ( matchType != kStringSearchMatchTypeNoMatch  ) {
+                    if ( matchField ) {
+                        *matchField = kDatabaseSearchMatchFieldCustomField;
+                    }
+                    
+                    return matchType;
+                }
+                
+            }
+        }
+    }
+    
+    if (self.format != kPasswordSafe) {
+        for ( NSString* obj in node.fields.attachments.allKeys ) {
+            StringSearchMatchType matchType = [obj isSearchMatch:searchText checkPinYin:checkPinYin];
+            if ( matchType != kStringSearchMatchTypeNoMatch ) {
+                if ( matchField ) {
+                    *matchField = kDatabaseSearchMatchFieldAttachment;
+                }
+                
+                return matchType;
+            }
+        }
+    }
+    
+    
+    
+    matchType = [self isPathMatches:searchText node:node checkPinYin:checkPinYin];
+    if ( matchType != kStringSearchMatchTypeNoMatch  ) {
+        if ( matchField ) {
+            *matchField = kDatabaseSearchMatchFieldPath;
+        }
+        
+        return matchType;
+    }
+    
+    return kStringSearchMatchTypeNoMatch;
+}
+
+- (NSArray<NSString*>*)getSearchTerms:(NSString *)searchText {
+    NSArray* split = [searchText componentsSeparatedByString:@" "];
+    NSMutableSet<NSString*>* unique = [NSMutableSet setWithArray:split];
+    [unique removeObject:@""];
+    
+    
+    
+    return [unique.allObjects sortedArrayUsingComparator:^NSComparisonResult(id  _Nonnull obj1, id  _Nonnull obj2) {
+        return [@(((NSString*)obj2).length) compare:@(((NSString*)obj1).length)];
     }];
 }
 
-- (NSArray<Node *> *)activeGroups {
-    if(self.format == kPasswordSafe) {
-        return self.allGroups;
+- (BOOL)isKeePass2Format {
+    return self.format == kKeePass || self.format == kKeePass4;
+}
+
+
+
+
+- (void)rebuildFastMaps {
+    
+    
+    NSMutableDictionary<NSUUID*, Node*>* uuidMap = NSMutableDictionary.dictionary;
+    
+    NSMutableSet<NSUUID*> *expirySet = NSMutableSet.set;
+    NSMutableSet<NSUUID*> *excludedFromAuditSet = NSMutableSet.set;
+    NSMutableSet<NSUUID*> *attachmentSet = NSMutableSet.set;
+    NSMutableSet<NSUUID*> *keeAgentSshKeysSet = NSMutableSet.set;
+    NSMutableSet<NSUUID*> *passkeysSet = NSMutableSet.set;
+    NSMutableSet<NSUUID*> *totpSet = NSMutableSet.set;
+    NSMutableDictionary<NSString*, NSMutableSet<NSUUID*>*>* tagMap = NSMutableDictionary.dictionary;
+    NSCountedSet<NSString*> *usernameSet = NSCountedSet.set;
+    NSCountedSet<NSString*> *emailSet = NSCountedSet.set;
+    NSCountedSet<NSString*> *urlSet = NSCountedSet.set;
+    NSCountedSet<NSString*> *customFieldKeySet = NSCountedSet.set;
+    
+    NSInteger entryTotalCount = 0;
+    NSInteger groupTotalCount = 0;
+    
+    if ( self.rootNode ) {
+        uuidMap[self.rootNode.uuid] = self.rootNode;
+        
+        
+        
+        for (Node* node in self.rootNode.allChildren) { 
+            Node* existing = uuidMap[node.uuid];
+            
+            if ( existing ) {
+                slog(@"🔴 WARNWARN: Duplicate ID in database => [%@] - [%@] - [%@]", existing, node, node.uuid);
+            }
+            else {
+                uuidMap[node.uuid] = node;
+            }
+            
+            if ( node.isGroup ) {
+                groupTotalCount++;
+            }
+            else {
+                entryTotalCount++;
+            }
+        }
+        
+        FastMaps* newMaps = [[FastMaps alloc] initWithUuidMap:uuidMap
+                                              withExpiryDates:expirySet
+                                              withAttachments:attachmentSet
+                                          withKeeAgentSshKeys:keeAgentSshKeysSet
+                                                 withPasskeys:passkeysSet
+                                                    withTotps:totpSet
+                                                       tagMap:tagMap
+                                                  usernameSet:usernameSet
+                                                     emailSet:emailSet
+                                                       urlSet:urlSet
+                                            customFieldKeySet:customFieldKeySet
+                                              entryTotalCount:entryTotalCount
+                                              groupTotalCount:groupTotalCount
+                                            excludedFromAudit:excludedFromAuditSet];
+        
+        _fastMaps = newMaps;
+        
+        
+        
+        DatabaseFormat format = self.format;
+        Node* keePass1BackupNode = (format == kKeePass1) ? self.keePass1BackupNode : nil;
+        Node* kp2RecycleBin = (format == kKeePass || format == kKeePass4 ) ? self.recycleBinNode : nil;
+        Node* recycler = kp2RecycleBin ? kp2RecycleBin : keePass1BackupNode;
+        
+        for (Node* node in self.rootNode.allChildren) { 
+            if ( recycler != nil && (node == recycler || [recycler contains:node]) ) {
+                continue;
+            }
+            
+            if ( self.format == kKeePass || self.format == kKeePass4 ) {
+                if ( !node.isSearchable ) {
+                    continue;
+                }
+            }
+            
+            
+            
+            if ( node.fields.expires != nil ) {
+                [expirySet addObject:node.uuid];
+            }
+            
+            
+            
+            if ( !node.fields.qualityCheck ) {
+                [excludedFromAuditSet addObject:node.uuid];
+            }
+            
+            
+            
+            if ( node.fields.attachments.count > 0 ) {
+                [attachmentSet addObject:node.uuid];
+            }
+            
+            
+            
+            if ( node.keeAgentSshKeyViewModel ) {
+                [keeAgentSshKeysSet addObject:node.uuid];
+            }
+            
+            
+            
+            if ( node.passkey ) {
+                [passkeysSet addObject:node.uuid];
+            }
+            
+            
+            
+            if ( node.fields.otpToken != nil ) {
+                [totpSet addObject:node.uuid];
+            }
+            
+            
+            
+            for ( NSString* tag in node.fields.tags ) {
+                NSMutableSet<NSUUID*>* set = tagMap[tag];
+                
+                if ( set == nil ) {
+                    tagMap[tag] = NSMutableSet.set;
+                    set = tagMap[tag];
+                }
+                
+                [set addObject:node.uuid];
+            }
+            
+            
+            
+            NSString* username = [Utils trim:node.fields.username];
+            if ( username.length ) {
+                [usernameSet addObject:username];
+            }
+            
+            
+            
+            NSString* email = [Utils trim:node.fields.email];
+            if ( email.length ) {
+                [emailSet addObject:email];
+            }
+            
+            
+            
+            for (NSString* key in node.fields.customFields.allKeys) {
+                [customFieldKeySet addObject:key];
+            }
+            
+            
+            
+            NSString* url = [Utils trim:node.fields.url];
+            if ( url.length ) {
+                [urlSet addObject:url];
+            }
+        }
     }
-    else if(self.format == kKeePass1) {
-        // Filter Backup Group
-        return [self.rootGroup filterChildren:YES predicate:^BOOL(Node * _Nonnull node) {
-            return node.isGroup && (self.keePass1BackupNode == nil || (node != self.keePass1BackupNode && ![self.keePass1BackupNode contains:node]));
-        }];
+    
+    FastMaps* newMaps = [[FastMaps alloc] initWithUuidMap:uuidMap
+                                          withExpiryDates:expirySet
+                                          withAttachments:attachmentSet
+                                      withKeeAgentSshKeys:keeAgentSshKeysSet
+                                             withPasskeys:passkeysSet
+                                                withTotps:totpSet
+                                                   tagMap:tagMap
+                                              usernameSet:usernameSet
+                                                 emailSet:emailSet
+                                                   urlSet:urlSet
+                                        customFieldKeySet:customFieldKeySet
+                                          entryTotalCount:entryTotalCount
+                                          groupTotalCount:groupTotalCount
+                                        excludedFromAudit:excludedFromAuditSet];
+    
+    _fastMaps = newMaps;
+    
+    
+    
+}
+
+- (NSArray<NSUUID *> *)getItemIdsForTag:(NSString *)tag {
+    NSSet<NSUUID*> *ret = self.fastMaps.tagMap[tag];
+    
+    return ret ? ret.allObjects : @[];
+}
+
+- (Node *)getItemById:(NSUUID *)uuid {
+    if ( uuid ) {
+        NSArray* ret = [self getItemsById:@[uuid]];
+        return ret ? ret.firstObject : nil;
     }
     else {
-        // Filter Recycle Bin
-        Node* recycleBin = self.recycleBinNode;
-        
-        return [self.rootGroup filterChildren:YES predicate:^BOOL(Node * _Nonnull node) {
-            return node.isGroup && (recycleBin == nil || (node != recycleBin && ![recycleBin contains:node]));
-        }];
+        slog(@"🔴 getItemById called with nil!");
+        return nil;
     }
 }
 
-- (NSArray<Node *> *)activeRecords {
-    if(self.format == kPasswordSafe) {
-        return self.allRecords;
+- (NSArray<Node*>*)getItemsById:(NSArray<NSUUID*>*)ids {
+    if (ids == nil) {
+        return nil;
     }
-    else if(self.format == kKeePass1) {
-        // Filter Backup Group
-        return [self.rootGroup filterChildren:YES predicate:^BOOL(Node * _Nonnull node) {
-            return !node.isGroup && (self.keePass1BackupNode == nil || ![self.keePass1BackupNode contains:node]);
+    
+    return [ids map:^id _Nonnull(NSUUID * _Nonnull obj, NSUInteger idx) {
+        return self.fastMaps.uuidMap[obj];
+    }];
+}
+
+- (Node *)getItemByCrossSerializationFriendlyId:(NSString*)serializationId {
+    if (serializationId.length < 1) {
+        return nil;
+    }
+    
+    NSString* prefix = [serializationId substringToIndex:1];
+    NSString* suffix = [serializationId substringFromIndex:1];
+    
+    if (self.format != kPasswordSafe || [prefix isEqualToString:@"R"]) {
+        NSUUID* uuid = [[NSUUID alloc] initWithUUIDString:suffix];
+        if (uuid) {
+            return [self getItemById:uuid];
+        }
+    }
+    else if ([prefix isEqualToString:@"G"]) { 
+        return [self.rootNode firstOrDefault:YES predicate:^BOOL(Node * _Nonnull node) {
+            NSString *testId = [self getCrossSerializationFriendlyId:node];
+            return [testId isEqualToString:serializationId];
         }];
+    }
+    
+    return nil;
+}
+
+- (NSString *)getCrossSerializationFriendlyIdId:(NSUUID *)nodeId {
+    Node* node = [self getItemById:nodeId];
+    return [self getCrossSerializationFriendlyId:node];
+}
+
+- (NSString *)getCrossSerializationFriendlyId:(Node *)node {
+    if (!node) {
+        return nil;
+    }
+    
+    
+    
+    
+    
+    
+    BOOL groupCanUseUuid = self.format != kPasswordSafe;
+    
+    NSString *identifier;
+    if(node.isGroup && !groupCanUseUuid) {
+        NSArray<NSString*> *titleHierarchy = [node getTitleHierarchy];
+        identifier = [titleHierarchy componentsJoinedByString:@":"];
     }
     else {
-        // Filter Recycle Bin
-        Node* recycleBin = self.recycleBinNode;
-        
-        return [self.rootGroup filterChildren:YES predicate:^BOOL(Node * _Nonnull node) {
-            return !node.isGroup && (recycleBin == nil || ![recycleBin contains:node]);
-        }];
+        identifier = [node.uuid UUIDString];
     }
+    
+    return [NSString stringWithFormat:@"%@%@", node.isGroup ? @"G" : @"R",  identifier];
 }
 
 - (NSSet<NSString*> *)urlSet {
-    NSMutableSet<NSString*> *bag = [[NSMutableSet alloc]init];
-    
-    for (Node *recordNode in self.activeRecords) {
-        if ([Utils trim:recordNode.fields.url].length > 0) {
-            [bag addObject:recordNode.fields.url];
-        }
-    }
-    
-    return bag;
+    return [self.fastMaps.urlSet copy];
 }
 
 - (NSSet<NSString*> *)usernameSet {
-    NSMutableSet<NSString*> *bag = [[NSMutableSet alloc]init];
-    
-    for (Node *recordNode in self.activeRecords) {
-        if ([Utils trim:recordNode.fields.username].length > 0) {
-            [bag addObject:recordNode.fields.username];
-        }
-    }
-    
-    return bag;
+    return [self.fastMaps.usernameSet copy];
 }
 
 - (NSSet<NSString*> *)emailSet {
-    NSMutableSet<NSString*> *bag = [[NSMutableSet alloc]init];
-    
-    for (Node *record in self.activeRecords) {
-        if ([Utils trim:record.fields.email].length > 0) {
-            [bag addObject:record.fields.email];
-        }
-    }
-    
-    return bag;
+    return [self.fastMaps.emailSet copy];
 }
 
-- (NSSet<NSString*> *)passwordSet {
-    NSMutableSet<NSString*> *bag = [[NSMutableSet alloc]init];
-    
-    for (Node *record in self.activeRecords) {
-        if ([Utils trim:record.fields.password].length > 0) {
-            [bag addObject:record.fields.password];
-        }
-    }
-    
-    return bag;
+- (NSSet<NSString*> *)customFieldKeySet {
+    return [self.fastMaps.customFieldKeySet copy];
 }
 
 - (NSString *)mostPopularEmail {
-    NSCountedSet<NSString*> *bag = [[NSCountedSet alloc]init];
-    
-    for (Node *record in self.activeRecords) {
-        if(record.fields.email.length) {
-            [bag addObject:record.fields.email];
-        }
-    }
-    
-    return [self mostFrequentInCountedSet:bag];
+    return [self mostFrequentInCountedSet:self.fastMaps.emailSet];
+}
+
+- (NSArray<NSString*>*)mostPopularEmails {
+    return [self orderedByMostFrequentDescending:self.fastMaps.emailSet];
 }
 
 - (NSString *)mostPopularUsername {
-    NSCountedSet<NSString*> *bag = [[NSCountedSet alloc]init];
+    return [self mostFrequentInCountedSet:self.fastMaps.usernameSet];
+}
+
+- (NSArray<NSString*>*)mostPopularUsernames {
+    return [self orderedByMostFrequentDescending:self.fastMaps.usernameSet];
+}
+
+- (NSSet<NSString*> *)tagSet { 
+    NSArray<NSString*>* trimmed = [self.fastMaps.tagMap.allKeys map:^id _Nonnull(NSString * _Nonnull obj, NSUInteger idx) {
+        return [Utils trim:obj];
+    }];
     
-    for (Node *record in self.activeRecords) {
-        if(record.fields.username.length) {
-            [bag addObject:record.fields.username];
-        }
+    NSArray* filtered = [trimmed filter:^BOOL(NSString * _Nonnull obj) {
+        return obj.length > 0;
+    }];
+
+    return [NSSet setWithArray:filtered];
+}
+
+- (NSArray<NSString*>*)mostPopularTags {
+    NSMutableArray<NSString*>* tags = self.fastMaps.tagMap.allKeys.mutableCopy;
+    
+    [tags removeObject:kCanonicalFavouriteTag]; 
+
+    NSArray<NSString*>* sorted = [tags sortedArrayUsingComparator:^(id obj1, id obj2) {
+        NSString* tag1 = obj1;
+        NSString* tag2 = obj2;
+        
+        NSSet<NSUUID*>* set1 = self.fastMaps.tagMap[tag1];
+        NSSet<NSUUID*>* set2 = self.fastMaps.tagMap[tag2];
+        
+        set1 = set1 == nil ? NSSet.set : set1;
+        set2 = set2 == nil ? NSSet.set : set2;
+        
+        NSUInteger n = set1.count;
+        NSUInteger m = set2.count;
+        
+        return (n <= m) ? (n < m)? NSOrderedDescending : NSOrderedSame : NSOrderedAscending;
+    }];
+    
+    return sorted;
+}
+
+- (NSArray<Node *> *)expirySetEntries {
+    return [self getItemsById:self.fastMaps.withExpiryDates.allObjects];
+}
+
+- (NSArray<Node *> *)expiredEntries {
+    return [self.expirySetEntries filter:^BOOL(Node * _Nonnull obj) {
+        return obj.fields.expired;
+    }];
+}
+
+- (NSArray<Node *> *)nearlyExpiredEntries {
+    return [self.expirySetEntries filter:^BOOL(Node * _Nonnull obj) {
+        return obj.fields.nearlyExpired;
+    }];
+}
+
+- (NSArray<Node *> *)totpEntries {
+    return [self getItemsById:self.fastMaps.withTotps.allObjects];
+}
+
+- (NSArray<Node *> *)attachmentEntries {
+    return [self getItemsById:self.fastMaps.withAttachments.allObjects];
+}
+
+- (NSArray<Node *> *)keeAgentSSHKeyEntries {
+    return [self getItemsById:self.fastMaps.withKeeAgentSshKeys.allObjects];
+}
+
+- (NSArray<Node *> *)passkeyEntries {
+    return [self getItemsById:self.fastMaps.withPasskeys.allObjects];
+}
+
+- (void)excludeFromAudit:(NSUUID *)nodeId exclude:(BOOL)exclude {
+    Node* node = [self getItemById:nodeId];
+    
+    BOOL shouldQualityCheck = !exclude;
+    
+    if ( node && node.fields.qualityCheck != shouldQualityCheck ) { 
+        node.fields.qualityCheck = shouldQualityCheck;
+        
+        [self rebuildFastMaps];
     }
-    
-    return [self mostFrequentInCountedSet:bag];
-}
-
-- (NSString *)mostPopularPassword {
-    NSCountedSet<NSString*> *bag = [[NSCountedSet alloc]init];
-    
-    for (Node *record in self.activeRecords) {
-        [bag addObject:record.fields.password];
+    else {
+        slog(@"⚠️ Could not find item or item is already in this audit exclusion state. WARNWARN");
     }
+}
+
+- (BOOL)isExcludedFromAudit:(NSUUID *)nodeId {
+    Node* node = [self getItemById:nodeId];
+    return !node.fields.qualityCheck;
     
-    return [self mostFrequentInCountedSet:bag];
+    
 }
 
--(NSInteger)numberOfRecords {
-    return self.allRecords.count;
+- (NSArray<Node *> *)excludedFromAuditItems {
+    __weak DatabaseModel* weakSelf = self;
+    
+    return [self.fastMaps.excludedFromAudit.allObjects map:^id _Nonnull(NSUUID * _Nonnull obj, NSUInteger idx) {
+        return [weakSelf getItemById:obj];
+    }];
 }
 
--(NSInteger)numberOfGroups {
-    return self.allGroups.count;
+- (NSArray<Node *> *)allSearchableNoneExpiredEntries {
+    return [self filterItems:NO includeEntries:YES searchableOnly:YES includeExpired:NO];
 }
 
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+- (NSArray<Node *> *)allSearchableAndRecycledEntries {
+    return [self filterItems:NO includeEntries:YES searchableOnly:YES includeExpired:NO includeRecycled:YES];
+}
+
+- (NSArray<Node *> *)allSearchableEntries {
+    return [self filterItems:NO includeEntries:YES searchableOnly:YES];
+}
+
+- (NSArray<Node *> *)allSearchableGroups {
+    return [self filterItems:YES includeEntries:NO searchableOnly:YES];
+}
+
+- (NSArray<Node *> *)allSearchableIncludingRecycled {
+    return [self filterItems:YES includeEntries:YES searchableOnly:YES includeExpired:YES includeRecycled:YES];
+}
+
+- (NSArray<Node *> *)allSearchableTrueRootIncludingRecycled {
+    return [self filterItems:YES includeEntries:YES searchableOnly:YES includeExpired:YES includeRecycled:YES trueRoot:YES];
+}
+
+- (NSArray<Node *> *)allSearchable {
+    return [self filterItems:YES includeEntries:YES searchableOnly:YES];
+}
+
+- (NSArray<Node *> *)allSearchableTrueRoot {
+    return [self filterItems:YES includeEntries:YES searchableOnly:YES includeExpired:YES includeRecycled:NO trueRoot:YES];
+}
+
+- (NSArray<Node *> *)allActiveEntries {
+    return [self filterItems:NO includeEntries:YES searchableOnly:NO];
+}
+
+- (NSArray<Node *> *)allActiveGroups {
+    return [self filterItems:YES includeEntries:NO searchableOnly:NO];
+}
+
+- (NSArray<Node *> *)allActive {
+    return [self filterItems:YES includeEntries:YES searchableOnly:NO];
+}
+
+- (NSInteger)fastEntryTotalCount {
+    return self.fastMaps.entryTotalCount;
+}
+
+- (NSInteger)fastGroupTotalCount {
+    return self.fastMaps.groupTotalCount - (self.rootNode == self.effectiveRootGroup ? 0 : 1); 
+}
+
+- (NSArray*)orderedByMostFrequentDescending:(NSCountedSet<NSString*>*)bag {
+    return [bag.allObjects sortedArrayUsingComparator:^(id obj1, id obj2) {
+        NSUInteger n = [bag countForObject:obj1];
+        NSUInteger m = [bag countForObject:obj2];
+        return (n <= m) ? (n < m)? NSOrderedDescending : NSOrderedSame : NSOrderedAscending;
+    }];
+}
 
 - (NSString*)mostFrequentInCountedSet:(NSCountedSet<NSString*>*)bag {
     NSString *mostOccurring = nil;
@@ -567,111 +1578,226 @@ void addSampleGroupAndRecordToGroup(Node* parent) {
     return mostOccurring;
 }
 
-- (BOOL)isTitleMatches:(NSString*)searchText node:(Node*)node dereference:(BOOL)dereference {
-    NSString* foo = [self maybeDeref:node.title node:node maybe:dereference];
-    return [foo localizedCaseInsensitiveContainsString:searchText];
-}
-
-- (BOOL)isUsernameMatches:(NSString*)searchText node:(Node*)node dereference:(BOOL)dereference {
-    NSString* foo = [self maybeDeref:node.fields.username node:node maybe:dereference];
-    return [foo localizedCaseInsensitiveContainsString:searchText];
-}
-
-- (BOOL)isPasswordMatches:(NSString*)searchText node:(Node*)node dereference:(BOOL)dereference {
-    NSString* foo = [self maybeDeref:node.fields.password node:node maybe:dereference];
-    return [foo localizedCaseInsensitiveContainsString:searchText];
-}
-
-- (BOOL)isUrlMatches:(NSString*)searchText node:(Node*)node dereference:(BOOL)dereference {
-    NSString* foo = [self maybeDeref:node.fields.url node:node maybe:dereference];
-    return [foo localizedCaseInsensitiveContainsString:searchText];
-}
-
-- (BOOL)isAllFieldsMatches:(NSString*)searchText node:(Node*)node dereference:(BOOL)dereference {
-    NSString* title = [self maybeDeref:node.title node:node maybe:dereference];
-    NSString* username = [self maybeDeref:node.fields.username node:node maybe:dereference];
-    NSString* password = [self maybeDeref:node.fields.password node:node maybe:dereference];
-    NSString* url = [self maybeDeref:node.fields.url node:node maybe:dereference];
-    NSString* email = [self maybeDeref:node.fields.email node:node maybe:dereference];
-    NSString* notes = [self maybeDeref:node.fields.notes node:node maybe:dereference];
+- (NSSet<Node*>*)getMinimalNodeSet:(const NSArray<Node*>*)nodes {
     
-    BOOL simple =   [title localizedCaseInsensitiveContainsString:searchText] ||
-    [username localizedCaseInsensitiveContainsString:searchText] ||
-    [password localizedCaseInsensitiveContainsString:searchText] ||
-    [email localizedCaseInsensitiveContainsString:searchText] ||
-    [url localizedCaseInsensitiveContainsString:searchText] ||
-    [notes localizedCaseInsensitiveContainsString:searchText];
     
-    if(simple) {
-        return YES;
+    
+    NSArray<Node*>* groups = [nodes filter:^BOOL(Node * _Nonnull obj) {
+        return obj.isGroup;
+    }];
+    
+    NSArray<Node*>* minimalNodeSet = [nodes filter:^BOOL(Node * _Nonnull node) {
+        BOOL alreadyContained = [groups anyMatch:^BOOL(Node * _Nonnull group) {
+            return [group contains:node];
+        }];
+        return !alreadyContained;
+    }];
+    
+    return [NSSet setWithArray:minimalNodeSet];
+}
+
+- (BOOL)isDereferenceableText:(NSString*)text {
+    return self.format != kPasswordSafe && [SprCompilation.sharedInstance isSprCompilable:text];
+}
+
+- (NSString*)maybeDeref:(NSString*)text node:(Node*)node maybe:(BOOL)maybe {
+    return maybe ? [self dereference:text node:node] : text;
+}
+
+- (NSString*)dereference:(NSString*)text node:(Node*)node {
+    if(self.format == kPasswordSafe || !text.length) {
+        return text;
     }
-    else {
-        if (self.format == kKeePass4 || self.format == kKeePass) {
-            for (NSString* key in node.fields.customFields.allKeys) {
-                NSString* value = node.fields.customFields[key].value;
-                
-                if ([key localizedCaseInsensitiveContainsString:searchText] || [value localizedCaseInsensitiveContainsString:searchText]) {
-                    return YES;
-                }
-            }
-        }
-        
-        if (self.format != kPasswordSafe) {
-            BOOL attachmentMatch = [node.fields.attachments anyMatch:^BOOL(NodeFileAttachment* _Nonnull obj) {
-                return [obj.filename localizedCaseInsensitiveContainsString:searchText];
-            }];
-            
-            if (attachmentMatch) {
-                return YES;
-            }
+    
+    NSError* error = nil;
+    
+    BOOL isCompilable = [SprCompilation.sharedInstance isSprCompilable:text];
+    
+    NSString* compiled = isCompilable ? [SprCompilation.sharedInstance sprCompile:text node:node database:self error:&error] : text;
+    
+    if(error) {
+        slog(@"WARN: SPR Compilation ERROR: [%@]", error);
+    }
+    
+    return compiled ? compiled : @""; 
+}
+
+- (BOOL)preOrderTraverse:(BOOL (^)(Node * _Nonnull))function {
+    return [self.rootNode preOrderTraverse:function];
+}
+
+- (NSString *)getPathDisplayString:(Node *)vm {
+    return [self getPathDisplayString:vm includeRootGroup:NO rootGroupNameInsteadOfSlash:NO includeFolderEmoji:NO joinedBy:@" ▸ "];
+}
+
+- (NSString *)getPathDisplayString:(Node *)vm
+                  includeRootGroup:(BOOL)includeRootGroup
+       rootGroupNameInsteadOfSlash:(BOOL)rootGroupNameInsteadOfSlash
+                includeFolderEmoji:(BOOL)includeFolderEmoji
+                          joinedBy:(NSString*)joinedBy {
+    NSMutableArray<NSString*> *hierarchy = [NSMutableArray array];
+    
+    Node* current = vm;
+    while (current != nil && current != self.effectiveRootGroup) {
+        NSString* title = includeFolderEmoji ? [NSString stringWithFormat:@"📂 %@", current.title] : current.title;
+        [hierarchy insertObject:title atIndex:0];
+        current = current.parent;
+    }
+    
+    if ( includeRootGroup ) {
+        NSString* rootGroupName = (rootGroupNameInsteadOfSlash && self.effectiveRootGroup) ? self.effectiveRootGroup.title : @"/";
+        NSString* title = includeFolderEmoji ? [NSString stringWithFormat:@"📂 %@", rootGroupName] : rootGroupName;
+        [hierarchy insertObject:title atIndex:0];
+    }
+    
+    if ( includeRootGroup && !rootGroupNameInsteadOfSlash && [joinedBy isEqualToString:@"/"] && hierarchy.count > 1 ) { 
+        [hierarchy removeObjectAtIndex:0];
+    }
+    
+    return [hierarchy componentsJoinedByString:joinedBy];
+}
+
+- (NSString *)getSearchParentGroupPathDisplayString:(Node *)vm {
+    return [self getSearchParentGroupPathDisplayString:vm prependSlash:NO];
+}
+
+- (NSString *)getSearchParentGroupPathDisplayString:(Node *)vm prependSlash:(BOOL)prependSlash {
+    if(!vm || vm.parent == nil || vm.parent == self.effectiveRootGroup) {
+        return @"/";
+    }
+    
+    NSMutableArray<NSString*> *hierarchy = [NSMutableArray array];
+    
+    Node* current = vm;
+    while (current.parent != nil && current.parent != self.effectiveRootGroup) {
+        [hierarchy insertObject:current.parent.title atIndex:0];
+        current = current.parent;
+    }
+    
+    NSString *path = [hierarchy componentsJoinedByString:@"/"];
+    
+    if ( prependSlash ) {
+        return [NSString stringWithFormat:@"/%@", path];
+    }
+    
+    return path;
+}
+
+- (Node *)recycleBinNode {
+    return self.recycleBinNodeUuid ? [self getItemById:self.recycleBinNodeUuid] : nil;
+}
+
+- (BOOL)recycleBinEnabled {
+    return self.metadata.recycleBinEnabled;
+}
+
+- (NSUUID *)recycleBinNodeUuid {
+    return self.metadata.recycleBinGroup;
+}
+
+- (NSDate *)recycleBinChanged {
+    return self.metadata.recycleBinChanged;
+}
+
+- (void)emptyRecycleBin {
+    if ( self.isKeePass2Format && self.recycleBinNode && self.recycleBinEnabled ) {
+        [self deleteItems:self.recycleBinNode.children];
+    }
+}
+
+- (Node*)keePass1BackupNode {
+    return [self.effectiveRootGroup firstOrDefault:NO predicate:^BOOL(Node * _Nonnull node) {
+        return [node.title isEqualToString:kKeePass1BackupGroupName];
+    }];
+}
+
+- (NSDictionary<NSUUID *,NSDate *> *)deletedObjects {
+    return self.mutableDeletedObjects.copy;
+}
+
+- (BOOL)isInRecycled:(NSUUID *)itemId {
+    Node* item = [self getItemById:itemId];
+    
+    if ( item && self.recycleBinNode ) {
+        if([self.recycleBinNode contains:item] || [self.recycleBinNode.uuid isEqual:itemId]) {
+            return YES;
         }
     }
     
     return NO;
 }
 
-- (NSArray<NSString*>*)getSearchTerms:(NSString *)searchText {
-    NSArray* split = [searchText componentsSeparatedByString:@" "];
-    NSMutableSet<NSString*>* unique = [NSMutableSet setWithArray:split];
-    [unique removeObject:@""];
+- (BOOL)canRecycle:(NSUUID *)itemId {
+    BOOL willRecycle = self.recycleBinEnabled;
     
-    // Split into words and sort by longest word first to eliminate most entries...
+    Node* item = [self getItemById:itemId];
+    if(item && self.recycleBinEnabled && self.recycleBinNode) {
+        if([self.recycleBinNode contains:item] || [self.recycleBinNode.uuid isEqual:itemId]) {
+            willRecycle = NO;
+        }
+    }
     
-    return [unique.allObjects sortedArrayUsingComparator:^NSComparisonResult(id  _Nonnull obj1, id  _Nonnull obj2) {
-        return [@(((NSString*)obj2).length) compare:@(((NSString*)obj1).length)];
+    return willRecycle;
+}
+
+- (NSArray<NodeHierarchyReconstructionData*>*)getHierarchyCloneForReconstruction:(const NSArray<Node*>*)items {
+    return [items map:^id _Nonnull(Node * _Nonnull obj, NSUInteger idx) {
+        NodeHierarchyReconstructionData* recon = [[NodeHierarchyReconstructionData alloc] init];
+        
+        recon.index = [obj.parent.children indexOfObject:obj];
+        recon.clonedNode = [obj clone:YES];
+        
+        return recon;
     }];
 }
 
-- (CompositeKeyFactors *)compositeKeyFactors {
-    return self.theSafe.compositeKeyFactors;
+
+
+- (NSString*)getHtmlPrintStringForItems:(NSString*)databaseName items:(NSArray<Node*>*)items {
+    
+    
+    NSMutableString* ret = [NSMutableString stringWithFormat:@"<html>%@\n<body>\n    <h1 class=\"database-title\">%@</h1>\n<h4>Printed: %@</h6>    ", kPrintingStylesheet, [self htmlStringFromString:databaseName], NSDate.date.iso8601DateString];
+    
+    NSArray<Node*>* sorted = [items sortedArrayUsingComparator:finderStyleNodeComparator];
+
+    for(Node* node in sorted) {
+        if ( node.isGroup ) {
+            continue;
+        }
+        
+        [ret appendString:[self getHtmlStringForNode:node]];
+        [ret appendString:@"    </tr>\n"];
+    }
+    
+    [ret appendString:@"</body>\n</html>"];
+    return ret.copy;
 }
 
 - (NSString*)getHtmlPrintString:(NSString*)databaseName {
-    // MMcG: This isn't great - in future use a css resource file and find a better way to build this... functional for now.
-    NSString* stylesheet = @"<head><style type=\"text/css\"> \
-    body { width: 800px; } \
-    .database-title { font-size: 36pt; text-align: center; } \
-    .group-title { font-size: 20pt; margin-top:20px; margin-bottom: 5px; text-align: center; font-weight: bold; } \
-    .entry-table {  border-collapse: collapse; margin-bottom: 10px; width: 800px; border: 1px solid black; } \
-    .entry-title { font-weight: bold; font-size: 16pt; padding: 5px; } \
-    table td, table th { border: 1px solid black; } \
-    .entry-field-label { width: 100px; padding: 2px; } \
-    .entry-field-value { font-family: Menlo; padding: 2px; max-width: 700px; word-wrap: break-word; } \
-    </style></head>";
-    
-    NSMutableString* ret = [NSMutableString stringWithFormat:@"<html>%@\n<body>\n    <h1 class=\"database-title\">%@</h1>\n<h6>Printed: %@</h6>    ", stylesheet, [self htmlStringFromString:databaseName], iso8601DateString(NSDate.date)];
-    
-    NSArray<Node*>* sortedGroups = [self.rootGroup.allChildGroups sortedArrayUsingComparator:^NSComparisonResult(id  _Nonnull obj1, id  _Nonnull obj2) {
-        NSString* path1 = [self getGroupPathDisplayString:obj1];
-        NSString* path2 = [self getGroupPathDisplayString:obj2];
+    NSArray<Node*>* sortedGroups = [self.effectiveRootGroup.allChildGroups sortedArrayUsingComparator:^NSComparisonResult(id  _Nonnull obj1, id  _Nonnull obj2) {
+        NSString* path1 = [self getPathDisplayString:obj1];
+        NSString* path2 = [self getPathDisplayString:obj2];
         return finderStringCompare(path1, path2);
     }];
     
     NSMutableArray* allGroups = sortedGroups.mutableCopy;
-    [allGroups addObject:self.rootGroup];
+    [allGroups addObject:self.effectiveRootGroup];
+    if ( self.recycleBinNode ) {
+        [allGroups removeObject:self.recycleBinNode];
+    }
+    
+    
+    
+    
+    
+    NSMutableString* ret = [NSMutableString stringWithFormat:@"<html>%@\n<body>\n    <h1 class=\"database-title\">%@</h1>\n<h4>Printed: %@</h6>    ", kPrintingStylesheet, [self htmlStringFromString:databaseName], NSDate.date.iso8601DateString];
     
     for(Node* group in allGroups) {
-        [ret appendFormat:@"    <div class=\"group-title\">%@</div>\n", [self htmlStringFromString:[self getGroupPathDisplayString:group]]];
+        if ( group.childRecords.count == 0 ) {
+            continue;
+        }
+        
+        [ret appendFormat:@"    <div class=\"group-title\">%@</div>\n", [self htmlStringFromString:[self getPathDisplayString:group]]];
         
         NSMutableArray* nodeStrings = @[].mutableCopy;
         
@@ -695,41 +1821,43 @@ void addSampleGroupAndRecordToGroup(Node* parent) {
 - (NSString*)getHtmlStringForNode:(Node*)entry {
     NSMutableString* str = [NSMutableString string];
     
-    [str appendFormat:@"        <table class=\"entry-table\"><tr class=\"entry-title\"><td colspan=\"100\">%@</td></tr>\n", entry.title];
+    [str appendFormat:@"        <table class=\"entry-table\"><tr class=\"entry-title\"><td colspan=\"100\">%@</td></tr>\n", [self dereference:entry.title node:entry]];
     
     if(entry.fields.username.length) {
-        [str appendString:[self getHtmlEntryFieldRow:@"Username" value:entry.fields.username]];
+        [str appendString:[self getHtmlEntryFieldRow:@"Username" value: [self dereference:entry.fields.username node:entry]]];
         [str appendString:@"\n"];
     }
     
-    [str appendString:[self getHtmlEntryFieldRow:@"Password" value:entry.fields.password]];
+    
+    
+    [str appendString:[self getHtmlEntryFieldRow:@"Password" value:[self dereference:entry.fields.password node:entry]]];
     [str appendString:@"\n"];
 
     if(entry.fields.url.length) {
-        [str appendString:[self getHtmlEntryFieldRow:@"URL" value:entry.fields.url]];
+        [str appendString:[self getHtmlEntryFieldRow:@"URL" value:[self dereference:entry.fields.url node:entry]]];
         [str appendString:@"\n"];
     }
     
-    if (self.format == kPasswordSafe && entry.fields.email.length) {
+    if ( entry.fields.email.length) {
         [str appendString:[self getHtmlEntryFieldRow:@"Email" value:entry.fields.email]];
         [str appendString:@"\n"];
     }
     
     if (entry.fields.notes.length) {
-        [str appendString:[self getHtmlEntryFieldRow:@"Notes" value:entry.fields.notes]];
+        [str appendString:[self getHtmlEntryFieldRow:@"Notes" value:[self dereference:entry.fields.notes node:entry]]];
         [str appendString:@"\n"];
     }
     
-    // Expiry
+    
     
     if(entry.fields.expires) {
-        [str appendString:[self getHtmlEntryFieldRow:@"Expires" value:iso8601DateString(entry.fields.expires)]];
+        [str appendString:[self getHtmlEntryFieldRow:@"Expires" value:entry.fields.expires.iso8601DateString]];
         [str appendString:@"\n"];
     }
 
-    // Custom Fields
     
-    if(entry.fields.customFields.count) {
+    
+    if(entry.fields.customFieldsNoEmail.count) {
         for (NSString* key in entry.fields.customFields.allKeys) {
             StringValue* v = entry.fields.customFields[key];
             [str appendString:[self getHtmlEntryFieldRow:key value:v.value]];
@@ -751,6 +1879,134 @@ void addSampleGroupAndRecordToGroup(Node* parent) {
     NSString *escapedString = textNode.XMLString;
     
     return [[escapedString stringByReplacingOccurrencesOfString:@"\r\n" withString:@"<br>"] stringByReplacingOccurrencesOfString:@"\n" withString:@"<br>"];
+}
+
+
+
+- (void)preSerializationPerformMaintenanceOrMigrations {
+    
+    
+    
+    
+    [self migrateOlderPasskeysForUsernameIssue]; 
+    
+    [self trimKeePassHistory];
+}
+
+- (void)migrateOlderPasskeysForUsernameIssue {
+    for ( Node* node in self.passkeyEntries ) {
+        StringValue *usernameSv = node.fields.customFields[@"KPXC_PASSKEY_USERNAME"];
+        
+        if ( usernameSv == nil ) {
+            slog(@"🟢 Migrate older Passkey format for node %@", node.uuid);
+            [node.fields setCustomField:@"KPXC_PASSKEY_USERNAME" value:[StringValue valueWithString:node.fields.username protected:NO]];
+        }
+    }
+}
+
+- (void)trimKeePassHistory {
+    [self trimKeePassHistory:self.metadata.historyMaxItems maxSize:self.metadata.historyMaxSize];
+}
+
+- (void)trimKeePassHistory:(NSNumber*)maxItems maxSize:(NSNumber*)maxSize {
+    for(Node* record in self.rootNode.allChildRecords) {
+        [self trimNodeKeePassHistory:record maxItems:maxItems maxSize:maxSize];
+    }
+}
+
+- (BOOL)trimNodeKeePassHistory:(Node*)node maxItems:(NSNumber*)maxItemsNum maxSize:(NSNumber*)maxSizeNum {
+    bool trimmed = false;
+    
+    NSInteger maxItems = maxItemsNum != nil ? maxItemsNum.integerValue : kDefaultHistoryMaxItems;
+    NSInteger maxSize = maxSizeNum != nil ? maxSizeNum.integerValue : kDefaultHistoryMaxSize;
+    
+    if(maxItems >= 0)
+    {
+        while(node.fields.keePassHistory.count > maxItems)
+        {
+            [self removeOldestHistoryItem:node];
+            trimmed = YES;
+        }
+    }
+    
+    if(maxSize >= 0)
+    {
+        while(true)
+        {
+            NSUInteger histSize = 0;
+            
+            for (Node* historicalNode in node.fields.keePassHistory) {
+                histSize += [self getEstimatedSize:historicalNode];
+            }
+            
+            if(histSize > maxSize)
+            {
+                [self removeOldestHistoryItem:node];
+                trimmed = YES;
+            }
+            else {
+                break;
+            }
+        }
+    }
+    
+    return trimmed;
+}
+
+- (NSUInteger)getEstimatedSize:(Node*)node {
+    
+    NSUInteger fixedStructuralSizeGuess = 256;
+    
+    NSUInteger basicFields = node.title.length +
+    node.fields.username.length +
+    node.fields.password.length +
+    node.fields.url.length +
+    node.fields.notes.length;
+    
+    NSUInteger customFields = 0;
+    for (NSString* key in node.fields.customFields.allKeys) {
+        customFields += key.length + node.fields.customFields[key].value.length;
+    }
+    
+    
+    
+    NSUInteger historySize = 0;
+    for (Node* historyNode in node.fields.keePassHistory) {
+        historySize += [self getEstimatedSize:historyNode];
+    }
+    
+    
+    
+    NSUInteger iconSize = node.icon ? node.icon.estimatedStorageBytes : 0UL;
+        
+    
+    
+    NSUInteger binariesSize = 0;
+    for (NSString* filename in node.fields.attachments.allKeys) {
+        KeePassAttachmentAbstractionLayer* dbA = node.fields.attachments[filename];
+        binariesSize += dbA == nil ? 0 : dbA.estimatedStorageBytes;
+    }
+    
+    NSUInteger textSize = (basicFields + customFields) * 2; 
+    
+    NSUInteger ret = fixedStructuralSizeGuess + textSize + historySize + iconSize + binariesSize;
+
+    
+    
+    return ret;
+}
+
+- (void)removeOldestHistoryItem:(Node*)node {
+    NSArray* sorted = [node.fields.keePassHistory sortedArrayUsingComparator:^NSComparisonResult(Node*  _Nonnull obj1, Node*  _Nonnull obj2) {
+        return [obj1.fields.modified compare:obj2.fields.modified];
+    }];
+    
+    if(sorted.count < 2) {
+        [node.fields.keePassHistory removeAllObjects];
+    }
+    else {
+        node.fields.keePassHistory = [[sorted subarrayWithRange:NSMakeRange(1, sorted.count - 1)] mutableCopy];
+    }
 }
 
 @end

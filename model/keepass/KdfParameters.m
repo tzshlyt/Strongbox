@@ -3,7 +3,7 @@
 //  Strongbox
 //
 //  Created by Mark on 26/10/2018.
-//  Copyright © 2018 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import "KdfParameters.h"
@@ -19,7 +19,7 @@
         VariantObject *variant = (VariantObject*)[parameters objectForKey:kKdfParametersKeyUuid];
         
         if(!variant) {
-            NSLog(@"Missing required $UUID Entry!");
+            slog(@"Missing required $UUID Entry!");
             return nil;
         }
         

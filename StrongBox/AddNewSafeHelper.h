@@ -3,7 +3,7 @@
 //  Strongbox
 //
 //  Created by Mark on 05/12/2018.
-//  Copyright © 2018 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import <Foundation/Foundation.h>
@@ -20,19 +20,29 @@ NS_ASSUME_NONNULL_BEGIN
 + (void)createNewDatabase:(UIViewController*)vc
                      name:(NSString *)name
                  password:(NSString *)password
-               keyFileUrl:(NSURL*)keyFileUrl
-       onceOffKeyFileData:(NSData*)onceOffKeyFileData
+          keyFileBookmark:(NSString * _Nullable)keyFileBookmark
+          keyFileFileName:(NSString * _Nullable)keyFileFileName
+       onceOffKeyFileData:(NSData* _Nullable)onceOffKeyFileData
+            yubiKeyConfig:(YubiKeyHardwareConfiguration*_Nullable)yubiKeyConfig
             storageParams:(SelectedStorageParameters*)storageParams
                    format:(DatabaseFormat)format
-               completion:(void (^)(SafeMetaData* metadata, NSError* error))completion;
+               completion:(void (^)(BOOL userCancelled, DatabasePreferences*_Nullable metadata, NSData*_Nullable initialSnapshot, NSError*_Nullable error))completion;
 
 + (void)createNewExpressDatabase:(UIViewController*)vc
                             name:(NSString *)name
                         password:(NSString *)password
-                      completion:(void (^)(SafeMetaData* metadata, NSError* error))completion;
+                      completion:(void (^)(BOOL userCancelled, DatabasePreferences*_Nullable metadata, NSData*_Nullable initialSnapshot, NSError*_Nullable error))completion;
 
-NSData* getKeyFileDigest(NSURL* keyFileUrl, NSData* onceOffKeyFileData, DatabaseFormat format, NSError** error);
-NSData* getKeyFileData(NSURL* keyFileUrl, NSData* onceOffKeyFileData, NSError** error);
++ (void)createNewExpressDatabase:(UIViewController*)vc
+                            name:(NSString *)name
+                           model:(DatabaseModel*)model
+                      completion:(void (^)(BOOL userCancelled, DatabasePreferences*_Nullable metadata, NSData*_Nullable initialSnapshot, NSError*_Nullable error))completion;
+
++ (void)createNewExpressDatabase:(UIViewController*)vc
+                            name:(NSString *)name
+                        password:(NSString *)password
+                      forceLocal:(BOOL)forceLocal
+                      completion:(void (^)(BOOL userCancelled, DatabasePreferences*_Nullable metadata, NSData*_Nullable initialSnapshot, NSError*_Nullable error))completion;
 
 @end
 

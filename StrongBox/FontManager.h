@@ -3,12 +3,12 @@
 //  test-new-ui
 //
 //  Created by Mark on 18/04/2019.
-//  Copyright © 2019 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
-#import "SafeMetaData.h"
+#import "DatabasePreferences.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -17,9 +17,21 @@ NS_ASSUME_NONNULL_BEGIN
 + (instancetype)sharedInstance;
 
 @property (readonly) UIFont* easyReadFont;
+@property (readonly) UIFont* easyReadBoldFont;
 @property (readonly) UIFont* easyReadFontForTotp;
+@property (readonly) UIFont* easyReadFontForLargeTextView;
 @property (readonly) UIFont* regularFont;
+
+@property (readonly) UIFont* title1Font;
+@property (readonly) UIFont* title2Font;
+@property (readonly) UIFont* title3Font;
+
+@property (readonly) UIFont* headlineFont;
+@property (readonly) UIFont* subheadlineFont;
+@property (readonly) UIFont* headlineItalicFont;
 @property (readonly) UIFont* italicFont;
+@property (readonly) UIFont* caption1Font;
+@property (readonly) UIFont* caption2Font;
 
 @end
 

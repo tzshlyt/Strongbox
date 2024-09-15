@@ -3,36 +3,38 @@
 //  Strongbox
 //
 //  Created by Mark on 17/10/2018.
-//  Copyright © 2018 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import <Foundation/Foundation.h>
-#import "XmlTree.h"
+#import "IXmlSerializer.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
 @protocol XmlParsingDomainObject <NSObject>
 
 - (void)setXmlInfo:(NSString*)elementName attributes:(NSDictionary*)attributes;
-- (void)setXmlInfo:(nonnull NSString *)elementName
-        attributes:(nonnull NSDictionary *)attributes
-              text:(nonnull NSString *)text;
-
-- (NSString*)getXmlText;
-- (void)appendXmlText:(NSString*)text;
-- (void)setXmlAttribute:(NSString*)key value:(NSString*)value;
 - (void)setXmlText:(NSString*)text;
+
+- (BOOL)appendStreamedText:(NSString*)text;
+
+@property (readonly) BOOL isV3BinaryHack;
+@property (readonly) NSString* originalElementName;
+@property (readonly) NSString* originalText;
+@property (readonly) NSDictionary<NSString*, NSString*> *originalAttributes;
+@property (readonly, nullable) NSArray<id<XmlParsingDomainObject>>* unmanagedChildren;
+
 - (void)onCompleted;
 
 - (nullable id<XmlParsingDomainObject>)getChildHandler:(NSString*)xmlElementName;
-- (BOOL)addKnownChildObject:(NSObject*)completedObject withXmlElementName:(NSString*)withXmlElementName; // return YES if you handle this element/object
-- (void)addUnknownChildObject:(XmlTree*)xmlItem;
 
-@property (nonatomic) XmlTree* nonCustomisedXmlTree;
+- (BOOL)addKnownChildObject:(id<XmlParsingDomainObject>)completedObject withXmlElementName:(NSString*)withXmlElementName; 
 
-// Generated from newly set values/modifications...
+- (void)addUnknownChildObject:(id<XmlParsingDomainObject>)xmlItem;
 
-- (XmlTree*)generateXmlTree;
+
+
+- (BOOL)writeXml:(id<IXmlSerializer>)serializer;
 
 @end
 

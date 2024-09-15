@@ -3,7 +3,7 @@
 //  Strongbox
 //
 //  Created by Mark on 17/06/2019.
-//  Copyright © 2019 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import "LocalDatabaseIdentifier.h"
@@ -11,7 +11,7 @@
 @implementation LocalDatabaseIdentifier
 
 + (instancetype)fromJson:(NSString *)json {
-    //NSLog(@"Deserializing from [%@]", json);
+    //slog(@"Deserializing from [%@]", json);
     
     NSError* error;
     NSDictionary* dictionary = [NSJSONSerialization JSONObjectWithData:[json dataUsingEncoding:NSUTF8StringEncoding]
@@ -19,7 +19,7 @@
                                                                  error:&error];
 
     if(error) {
-        NSLog(@"%@", error);
+        slog(@"%@", error);
         return nil;
     }
     
@@ -44,13 +44,13 @@
     NSData* data = [NSJSONSerialization dataWithJSONObject:dictionary options:0 error:&error];
     
     if (error) {
-        NSLog(@"%@", error);
+        slog(@"%@", error);
         return nil;
     }
     
     NSString *json = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
     
-    //NSLog(@"Serializing As [%@]", json);
+    
     
     return json;
 }

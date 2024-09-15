@@ -5,7 +5,7 @@
 #import "Record.h"
 #import "Field.h"
 #import "Utils.h"
-#import "Utils.h"
+#import "NSData+Extensions.h"
 
 #include <Security/Security.h>
 
@@ -19,7 +19,7 @@
     memset(K, 0, CC_SHA256_BLOCK_BYTES);
     [key getBytes:K length:key.length];
 
-    // Get K with iPad
+    
 
     unsigned char KwithIpad[CC_SHA256_BLOCK_BYTES];
 
@@ -27,7 +27,7 @@
         KwithIpad[i] = K[i] ^ 0x36;
     }
 
-    // Get K with oPad
+    
 
     unsigned char KwithOpad[CC_SHA256_BLOCK_BYTES];
 
@@ -35,7 +35,7 @@
         KwithOpad[i] = K[i] ^ 0x5c;
     }
 
-    // Get H(Kipad | m)
+    
 
     CC_SHA256_CTX context;
 
@@ -47,11 +47,11 @@
     [y appendData:m];
 
     CC_SHA256_Update(&context, y.bytes, (CC_LONG)y.length);
-    //CC_SHA256_Update(&context, m.bytes, (CC_LONG)[m length] );
+    
 
     CC_SHA256_Final(hKipadAndM.mutableBytes, &context);
 
-    // get H(kWithOpad | H(KiPad | m))
+    
 
     CC_SHA256_CTX context2;
 
@@ -63,7 +63,7 @@
     [z appendData:hKipadAndM];
 
     CC_SHA256_Update(&context2, z.bytes, (CC_LONG)z.length);
-    //CC_SHA256_Update(&context2, hKipadAndM.bytes, (CC_LONG)CC_SHA256_DIGEST_LENGTH );
+    
 
     CC_SHA256_Final(hmac.mutableBytes, &context2);
 
@@ -73,10 +73,10 @@
 + (NSData *)serializeField:(Field *)field {
     FieldHeader header;
 
-    header.length = (int)(field.data).length;
+    header.length = (uint32_t)(field.data).length;
     header.type = field.type;
 
-    // Buffer with length rounded forward to TWOFISH_BLOCKSIZE boundary...
+    
 
     unsigned int length = (unsigned int)(field.data).length + FIELD_HEADER_LENGTH;
 
@@ -86,7 +86,7 @@
     }
 
 #ifdef DEBUG_MEMORY_ALLOCATION_LOGGING
-    NSLog(@"serializeField => Allocating: %lu bytes", (unsigned long)length);
+    slog(@"serializeField => Allocating: %lu bytes", (unsigned long)length);
 #endif
     unsigned char *buf = malloc(length);
     if(!buf)
@@ -109,11 +109,11 @@
 }
 
 + (NSData *)encryptCBC:(NSData *)K ptData:(NSData *)ptData iv:(unsigned char *)iv {
-    int err;
+    
     symmetric_key cbckey;
 
-    if ((err = twofish_setup(K.bytes, TWOFISH_KEYSIZE_BYTES, 0, &cbckey)) != CRYPT_OK) {
-        NSLog(@"Invalid K Key");
+    if ((twofish_setup(K.bytes, TWOFISH_KEYSIZE_BYTES, 0, &cbckey)) != CRYPT_OK) {
+        slog(@"Invalid K Key");
         return nil;
     }
 
@@ -121,14 +121,15 @@
 
     NSMutableData *ret = [[NSMutableData alloc] init];
     unsigned char *localIv = iv;
+    unsigned char ct[TWOFISH_BLOCK_SIZE];
 
     for (int i = 0; i < blockCount; i++) {
-        //NSLog(@"Encrypting Block %d", i);
+        
 
         unsigned char pt[TWOFISH_BLOCK_SIZE];
         [ptData getBytes:pt range:NSMakeRange(i * TWOFISH_BLOCK_SIZE, TWOFISH_BLOCK_SIZE)];
 
-        // CBC Loop xor with IV or previous CT
+        
 
         for (int j = 0; j < TWOFISH_BLOCK_SIZE; j++) {
             unsigned char b = localIv[j];
@@ -136,10 +137,9 @@
             pt[j] = b ^ c;
         }
 
-        unsigned char ct[TWOFISH_BLOCK_SIZE];
         twofish_ecb_encrypt(pt, ct, &cbckey);
 
-        [ret appendBytes:ct length:TWOFISH_BLOCK_SIZE]; // Write to final buffer
+        [ret appendBytes:ct length:TWOFISH_BLOCK_SIZE]; 
 
         localIv = ct;
     }
@@ -158,18 +158,18 @@
     hdr.tag[2] = 'S';
     hdr.tag[3] = '3';
 
-    // hdr.salt
+    
 
     if (SecRandomCopyBytes(kSecRandomDefault, SIZE_OF_PASSWORD_SAFE_3_HEADER_SALT, hdr.salt)) {
-        NSLog(@"Could not securely copy header salt bytes");
+        slog(@"Could not securely copy header salt bytes");
         [Utils createNSError:@"Could not securely copy header salt bytes" errorCode:-1];
     }
 
-    // hdr.iter
+    
 
     [Utils integerTolittleEndian4Bytes:keyStretchIterations bytes:hdr.iter];
 
-    // P' => We generate P' using master password and salt
+    
 
     NSData *salt = [NSData dataWithBytes:hdr.salt length:SIZE_OF_PASSWORD_SAFE_3_HEADER_SALT];
     NSData *pw = [NSData dataWithData:[masterPassword dataUsingEncoding:NSUTF8StringEncoding]];
@@ -188,12 +188,12 @@
     }
     NSData* pBarData = [NSData dataWithBytes:digest length:CC_SHA256_DIGEST_LENGTH];
     
-    // hPbar => We now have P' we need H(P') so one more sha256!
+    
 
-    NSData *hPBar = sha256(pBarData);
+    NSData *hPBar = pBarData.sha256;
     [hPBar getBytes:hdr.hPBar length:32];
 
-    // We generate new K and L
+    
 
     unsigned char k1[TWOFISH_BLOCK_SIZE];
     unsigned char k2[TWOFISH_BLOCK_SIZE];
@@ -204,24 +204,24 @@
         SecRandomCopyBytes(kSecRandomDefault, TWOFISH_BLOCK_SIZE, k2) ||
         SecRandomCopyBytes(kSecRandomDefault, TWOFISH_BLOCK_SIZE, l1) ||
         SecRandomCopyBytes(kSecRandomDefault, TWOFISH_BLOCK_SIZE, l2)) {
-        NSLog(@"Could not securely copy K or L bytes");
+        slog(@"Could not securely copy K or L bytes");
         [Utils createNSError:@"Could not securely copy K or L bytes" errorCode:-1];
     }
 
-    //    NSLog(@"--------------- new ------------------");
-    //    hexdump(k1, TWOFISH_BLOCK_SIZE, 16);
-    //    hexdump(k2, TWOFISH_BLOCK_SIZE, 16);
-    //    hexdump(l1, TWOFISH_BLOCK_SIZE, 16);
-    //    hexdump(l2, TWOFISH_BLOCK_SIZE, 16);
-    //    NSLog(@"---------------------------------------");
+    
+    
+    
+    
+    
+    
 
-    //    hdr.b1,  hdr.b2, hdr.b3,  hdr.b4;
+    
 
     int err;
     symmetric_key skey;
 
     if ((err = twofish_setup(pBarData.bytes, TWOFISH_KEYSIZE_BYTES, 0, &skey)) != CRYPT_OK) {
-        NSLog(@"Could not do twofish_setup ok: %d", err);
+        slog(@"Could not do twofish_setup ok: %d", err);
         [Utils createNSError:@"Could not do twofish_setup ok" errorCode:err];
     }
 
@@ -230,7 +230,7 @@
     twofish_ecb_encrypt(l1, hdr.b3, &skey);
     twofish_ecb_encrypt(l2, hdr.b4, &skey);
 
-    // we need to return K and L also
+    
 
     NSMutableData *kk = [[NSMutableData alloc] initWithBytes:k1 length:TWOFISH_BLOCK_SIZE];
     [kk appendBytes:k2 length:TWOFISH_BLOCK_SIZE];
@@ -241,10 +241,10 @@
     *K = kk;
     *L = ll;
 
-    // hdr.iv;
+    
 
     if (SecRandomCopyBytes(kSecRandomDefault, SIZE_OF_PASSWORD_SAFE_3_HEADER_IV, hdr.iv)) {
-        NSLog(@"Could not do securely copy password safe header ok");
+        slog(@"Could not do securely copy password safe header ok");
         [Utils createNSError:@"Could not do securely copy Password Safe 3 header ok" errorCode:-1];
     }
 
@@ -253,18 +253,18 @@
 
 + (PasswordSafe3Header)getHeader:(NSData*)data {
     PasswordSafe3Header ret;
-    
+        
     [data getBytes:&ret length:SIZE_OF_PASSWORD_SAFE_3_HEADER];
     
     return ret;
 }
 
-+ (BOOL)isAValidSafe:(nullable NSData *)candidate error:(NSError**)error {
-    if(candidate == nil || candidate.length < SIZE_OF_PASSWORD_SAFE_3_HEADER) {
++ (BOOL)isValidDatabase:(NSData *)prefix error:(NSError *__autoreleasing  _Nullable *)error {
+    if(prefix == nil || prefix.length < SIZE_OF_PASSWORD_SAFE_3_HEADER) {
         return NO;
     }
     
-    PasswordSafe3Header header = [PwSafeSerialization getHeader:candidate];
+    PasswordSafe3Header header = [PwSafeSerialization getHeader:prefix];
     
     if (header.tag[0] != 'P' ||
         header.tag[1] != 'W' ||
@@ -277,35 +277,26 @@
         return NO;
     }
 
-    NSUInteger endOfData = [PwSafeSerialization getEofFileOffset:candidate];
-    
-    if (endOfData == NSNotFound) {
-        NSLog(@"Invalid Password Safe. No End of File marker magic");
-        if(error) {
-            *error = [Utils createNSError:@"Invalid Password Safe 3 File. No End of File marker magic" errorCode:-1];
-        }
-        return NO;
-    }
 
-    NSUInteger recordsLength = endOfData - SIZE_OF_PASSWORD_SAFE_3_HEADER;
-    if (recordsLength <= 0) {
-        NSLog(@"Invalid Password Safe 3 File. Negative or zero record length");
-        if(error) {
-            *error = [Utils createNSError:@"Invalid Password Safe 3 File. Negative or zero record length" errorCode:-1];
-        }
-        return NO;
-    }
 
-    NSInteger numBlocks = recordsLength / TWOFISH_BLOCK_SIZE;
-    NSUInteger rem = recordsLength % TWOFISH_BLOCK_SIZE;
 
-    if (numBlocks <= 0 || rem != 0) {
-        NSLog(@"Invalid Password Safe. Zero blocks found or Non zero remainder in blocks.");
-        if(error) {
-            *error = [Utils createNSError:@"Invalid Password Safe 3 File. Zero blocks found or Non zero remainder in blocks." errorCode:-1];
-        }
-        return NO;
-    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
     return YES;
 }
@@ -314,22 +305,22 @@
     NSUInteger endOfData = [PwSafeSerialization getEofFileOffset:candidate];
     
     if (endOfData == NSNotFound) {
-        NSLog(@"No End of File marker magic");
+        slog(@"No End of File marker magic");
         return NO;
     }
     
     NSUInteger recordsLength = endOfData - SIZE_OF_PASSWORD_SAFE_3_HEADER;
     if (recordsLength <= 0) {
-        NSLog(@"Negative or zero record length");
+        slog(@"Negative or zero record length");
         return NO;
     }
     
     return recordsLength / TWOFISH_BLOCK_SIZE;
 }
 
-+ (NSInteger)getKeyStretchIterations:(NSData *)data {
++ (NSUInteger)getKeyStretchIterations:(NSData *)data {
     PasswordSafe3Header header = [PwSafeSerialization getHeader:data];
-    return littleEndian4BytesToInt32(header.iter);
+    return littleEndian4BytesToUInt32(header.iter);
 }
 
 + (NSUInteger)getEofFileOffset:(NSData*)data {
@@ -339,7 +330,7 @@
     return endRange.location;
 }
 
-+ (NSData*)keystretch:(int)iter header:(unsigned char[32])saltBytes pBar_p:(NSData **)ppBar password:(NSString *)password {
++ (NSData*)keystretch:(uint32_t)iter header:(unsigned char[32])saltBytes pBar_p:(NSData **)ppBar password:(NSString *)password {
     NSData *pw = [NSData dataWithData:[password dataUsingEncoding:NSUTF8StringEncoding]];
 
     uint8_t digest[CC_SHA256_DIGEST_LENGTH] = { 0 };
@@ -350,26 +341,26 @@
     CC_SHA256_Update(&context, saltBytes, (CC_LONG)32);
     CC_SHA256_Final(digest, &context);
 
-    for (int i=0; i<iter; i++) {
+    for (uint32_t i=0; i<iter; i++) {
         CC_SHA256(digest, CC_SHA256_DIGEST_LENGTH, digest);
     }
     
     *ppBar = [NSData dataWithBytes:digest length:CC_SHA256_DIGEST_LENGTH];
     
-    // We now have P' we need H(P') so one more sha256!
+    
 
-    return sha256(*ppBar);
+    return (*ppBar).sha256;
 }
 
 + (BOOL)getKandL:(NSData *)pBar header:(PasswordSafe3Header)header K_p:(NSData **)K_p L_p:(NSData **)L_p {
     /* schedule the key */
 
-    int err;
+    
     symmetric_key skey;
     unsigned char *key = (unsigned char *)pBar.bytes;
 
-    if ((err = twofish_setup(key, TWOFISH_KEYSIZE_BYTES, 0, &skey)) != CRYPT_OK) {
-        NSLog(@"Crypto Problem");
+    if ((twofish_setup(key, TWOFISH_KEYSIZE_BYTES, 0, &skey)) != CRYPT_OK) {
+        slog(@"Crypto Problem");
         return NO;
     }
 
@@ -381,7 +372,7 @@
     [k1 appendData:k2];
     *K_p = [NSData dataWithData:k1];
 
-    // L
+    
 
     NSMutableData *l1 = [NSMutableData dataWithLength:16 ];
     twofish_ecb_decrypt(header.b3, l1.mutableBytes, &skey);
@@ -407,7 +398,7 @@
 }
 
 + (BOOL)checkPassword:(PasswordSafe3Header *)pHeader password:(NSString *)password pBar:(NSData **)ppBar {
-    int iter = littleEndian4BytesToInt32(pHeader->iter);
+    uint32_t iter = littleEndian4BytesToUInt32(pHeader->iter);
 
     NSData *hPBar = [self keystretch:iter header:pHeader->salt pBar_p:ppBar password:password];
 
@@ -421,12 +412,12 @@
 }
 
 + (NSData *)decryptBlocks:(NSData *)K ct:(unsigned char *)ct iv:(unsigned char *)iv numBlocks:(NSUInteger)numBlocks {
-    int err;
+    
     symmetric_key skey;
     unsigned char *key = (unsigned char *)K.bytes;
 
-    if ((err = twofish_setup(key, TWOFISH_KEYSIZE_BYTES, 0, &skey)) != CRYPT_OK) {
-        NSLog(@"Invalid K Key");
+    if ((twofish_setup(key, TWOFISH_KEYSIZE_BYTES, 0, &skey)) != CRYPT_OK) {
+        slog(@"Invalid K Key");
         return nil;
     }
 
@@ -448,34 +439,34 @@
 }
 
 + (void)dumpDbHeaderAndRecords:(NSMutableArray *)headerFields records:(NSMutableArray *)records {
-    //hexdump(raw, [decData length], 2);
+    
 
-    NSLog(@"-------------------------- HEADER -------------------------------");
+    slog(@"-------------------------- HEADER -------------------------------");
 
     for (Field *field in headerFields) {
-        //NSData *value = field.data;
+        
         NSString *valueStr = field.prettyDataString;
         NSString *keyStr = field.prettyTypeString;
 
-        //NSLog(@"%@ => %@ => bytes[%@]", keyStr, valueStr, value);
-        NSLog(@"%@ => %@", keyStr, valueStr);
+        
+        slog(@"%@ => %@", keyStr, valueStr);
     }
 
-    NSLog(@"----------------------------------------------------------------");
+    slog(@"----------------------------------------------------------------");
 
-    NSLog(@"------------------------- RECORDS ------------------------------");
+    slog(@"------------------------- RECORDS ------------------------------");
 
     for (Record *record in records) {
         for (Field *field in [record getAllFields]) {
-            //NSData *value = field.data;
+            
             NSString *valueStr = field.prettyDataString;
             NSString *keyStr = field.prettyTypeString;
 
-            //NSLog(@"%@ => %@ => bytes[%@]", keyStr, valueStr, value);
-            NSLog(@"%@ => %@", keyStr, valueStr);
+            
+            slog(@"%@ => %@", keyStr, valueStr);
         }
 
-        NSLog(@"----------------------------------------------------------------");
+        slog(@"----------------------------------------------------------------");
     }
 }
 
@@ -485,7 +476,7 @@
     NSMutableData *dataForHmac = [[NSMutableData alloc] init];
 
 #ifdef DEBUG_MEMORY_ALLOCATION_LOGGING
-    NSLog(@"extractDbHeaderAndRecords => Allocating: %lu bytes", (unsigned long)decData.length);
+    slog(@"extractDbHeaderAndRecords => Allocating: %lu bytes", (unsigned long)decData.length);
 #endif
     unsigned char *raw = malloc(decData.length);
     if (!raw)
@@ -495,7 +486,7 @@
     
     [decData getBytes:raw length:decData.length];
 
-    //hexdump(raw, [decData length], 16);
+    
 
     unsigned char *currentField = raw;
     unsigned char *end = raw + decData.length;
@@ -516,7 +507,7 @@
                                                   type:fieldStart->type];
 
             if (fieldStart->type == FIELD_TYPE_END) {
-                Record *newRecord = [[Record alloc]initWithFields:fields];
+                Record *newRecord = [[Record alloc] initWithFields:fields];
                 
                 [*records_p addObject:newRecord];
 
@@ -525,7 +516,7 @@
             else {
                 NSNumber *type = [NSNumber numberWithInt:fieldStart->type];
                 fields[type] = field;
-                // OK to use dictionary as only one field per type, unlike header, where empty group can be present multiple times
+                
             }
         }
         else {

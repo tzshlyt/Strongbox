@@ -3,7 +3,7 @@
 //  Strongbox
 //
 //  Created by Mark on 26/10/2018.
-//  Copyright © 2018 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import "Argon2KdfCipher.h"
@@ -21,11 +21,18 @@ static NSString* const kParameterSecretKey = @"K";
 static NSString* const kParameterAssocData = @"A";
 static NSString* const kParameterMemory = @"M";
 
-static const uint64_t kDefaultIterations = 2;
-static const uint64_t kDefaultMemory = 1024 * 1024;
+#ifdef DEBUG
+static const uint64_t kDefaultIterations = 2;  
+#else
+static const uint64_t kDefaultIterations = 12; 
+#endif
+
+static const uint64_t kDefaultMemory = 16 * 1024 * 1024;
 static const uint32_t kDefaultParallelism = 2;
 static const uint32_t kDefaultVersion = 19;
 static const uint32_t kDefaultSaltLength = 32;
+    
+static const uint64_t kMaxRecommendedMemory = 64 * 1024 * 1024;
 
 static const uint32_t kBlockSize = 1024;
 
@@ -34,28 +41,34 @@ static const BOOL kLogVerbose = NO;
 @interface Argon2KdfCipher ()
 
 @property (nonatomic, readonly) NSData *salt;
-@property (nonatomic, readonly) uint32_t parallelism;
-@property (nonatomic, readonly) uint64_t memory;
-@property (nonatomic, readonly) uint64_t iterations;
+@property (nonatomic, readonly) uint32_t innerParallelism;
+@property (nonatomic, readonly) uint64_t innerMemory;
+@property (nonatomic, readonly) uint64_t innerIterations;
 @property (nonatomic, readonly) uint32_t version;
 @property (nonatomic, readonly) NSData *secretKey;
 @property (nonatomic, readonly) NSData *assocData;
+
+@property BOOL argon2id;
 
 @end
 
 @implementation Argon2KdfCipher
 
-- (instancetype)initWithDefaults
-{
+- (instancetype)initWithDefaults:(BOOL)argon2id {
+    return [self initWithArgon2id:argon2id memory:kDefaultMemory parallelism:kDefaultParallelism iterations:kDefaultIterations];
+}
+
+- (instancetype)initWithArgon2id:(BOOL)argon2id memory:(uint64_t)memory parallelism:(uint32_t)parallelism iterations:(uint64_t)iterations {
     self = [super init];
     if (self) {
-        _parallelism = kDefaultParallelism;
-        _memory = kDefaultMemory;
-        _iterations = kDefaultIterations;
+        _innerParallelism = parallelism;
+        _innerMemory = memory;
+        _innerIterations = iterations;
         _version = kDefaultVersion;
         _salt = getRandomData(kDefaultSaltLength);
         _secretKey = nil;
         _assocData = nil;
+        self.argon2id = argon2id;
     }
     return self;
 }
@@ -63,7 +76,7 @@ static const BOOL kLogVerbose = NO;
 - (instancetype)initWithParametersDictionary:(KdfParameters*)parameters {
     self = [super init];
     if (self) {
-        //NSLog(@"ARGON2: %@", parameters);
+        
         VariantObject *salt = [parameters.parameters objectForKey:kParameterSalt];
         if(!salt) {
             return nil;
@@ -74,26 +87,26 @@ static const BOOL kLogVerbose = NO;
 
         VariantObject *parallelism = [parameters.parameters objectForKey:kParameterParallelism];
         if(!parallelism) {
-            _parallelism = kDefaultParallelism;
+            _innerParallelism = kDefaultParallelism;
         }
         else {
-            _parallelism = ((NSNumber*)parallelism.theObject).unsignedIntValue;
+            _innerParallelism = ((NSNumber*)parallelism.theObject).unsignedIntValue;
         }
         
         VariantObject *memory = [parameters.parameters objectForKey:kParameterMemory];
         if(!memory) {
-            _memory = kDefaultMemory;
+            _innerMemory = kDefaultMemory;
         }
         else {
-            _memory = ((NSNumber*)memory.theObject).longLongValue;
+            _innerMemory = ((NSNumber*)memory.theObject).longLongValue;
         }
         
         VariantObject *iterations = [parameters.parameters objectForKey:kParameterIterations];
         if(!iterations) {
-            _iterations = kDefaultIterations;
+            _innerIterations = kDefaultIterations;
         }
         else {
-            _iterations = ((NSNumber*)iterations.theObject).longLongValue;
+            _innerIterations = ((NSNumber*)iterations.theObject).longLongValue;
         }
         
         VariantObject *version = [parameters.parameters objectForKey:kParameterVersion];
@@ -104,7 +117,9 @@ static const BOOL kLogVerbose = NO;
             _version = ((NSNumber*)version.theObject).unsignedIntValue;
         }
         
-        // Optional
+        self.argon2id = parameters.uuid && [parameters.uuid isEqual:argon2idCipherUuid()];
+        
+        
         
         VariantObject *secretKey = [parameters.parameters objectForKey:kParameterSecretKey];
         VariantObject *assocData = [parameters.parameters objectForKey:kParameterAssocData];
@@ -121,9 +136,9 @@ static const BOOL kLogVerbose = NO;
     argon2_context ctx = { 0 };
     
     ctx.version = self.version;
-    ctx.lanes = self.parallelism;
-    ctx.m_cost = (uint32_t)self.memory / kBlockSize;
-    ctx.t_cost = (uint32_t)self.iterations;
+    ctx.lanes = self.innerParallelism;
+    ctx.m_cost = (uint32_t)self.innerMemory / kBlockSize;
+    ctx.t_cost = (uint32_t)self.innerIterations;
     ctx.out = buffer;
     ctx.outlen = 32;
     ctx.pwd = (uint8_t*)data.bytes;
@@ -134,26 +149,39 @@ static const BOOL kLogVerbose = NO;
     ctx.secretlen = self.secretKey ? (uint32_t)self.secretKey.length : 0;
     ctx.ad = self.assocData ? (uint8_t*)self.assocData.bytes : nil;
     ctx.adlen = self.assocData ? (uint32_t) self.assocData.length : 0;
-    ctx.threads = self.parallelism; // UNSURE but looks ok: Correct or should it be constant 4?
-    ctx.allocate_cbk = nil; // Important - got caught with a bug here due to initialization values. Must be nil
-    ctx.free_cbk = nil; // Important - got caught with a bug here due to initialization values. Must be nil
-    
-    argon2d_ctx(&ctx);
+    ctx.threads = self.innerParallelism; 
+    ctx.allocate_cbk = nil; 
+    ctx.free_cbk = nil; 
+        
+    if ( self.argon2id ) {
+        argon2id_ctx(&ctx);
+    }
+    else {
+        argon2d_ctx(&ctx);
+    }
     
     NSData *transformKey = [NSData dataWithBytes:ctx.out length:ctx.outlen];
 
     if(kLogVerbose) {
-        NSLog(@"ARGON2: TRANSFORM KEY: %@", [transformKey base64EncodedStringWithOptions:kNilOptions]);
+        slog(@"ARGON2: TRANSFORM KEY: %@", [transformKey base64EncodedStringWithOptions:kNilOptions]);
     }
 
     return transformKey;
 }
 
+- (void)rotateHardwareKeyChallenge {
+    slog(@"✅ Rotating Argon2 Yubi Challenge");
+    
+    _salt = getRandomData(kDefaultSaltLength);
+}
+
 - (KdfParameters *)kdfParameters {
-    VariantObject *uuid = [[VariantObject alloc] initWithType:kVariantTypeByteArray theObject:argon2CipherUuidData()];
-    VariantObject *voIterations = [[VariantObject alloc] initWithType:kVariantTypeUint64 theObject:@(self.iterations)];
-    VariantObject *voParallelism = [[VariantObject alloc] initWithType:kVariantTypeUint32 theObject:@(self.parallelism)];
-    VariantObject *voMemory = [[VariantObject alloc] initWithType:kVariantTypeUint64 theObject:@(self.memory)];
+    NSData* uuidData = self.argon2id ? argon2idCipherUuidData() : argon2dCipherUuidData();
+    VariantObject *uuid = [[VariantObject alloc] initWithType:kVariantTypeByteArray theObject:uuidData];
+    
+    VariantObject *voIterations = [[VariantObject alloc] initWithType:kVariantTypeUint64 theObject:@(self.innerIterations)];
+    VariantObject *voParallelism = [[VariantObject alloc] initWithType:kVariantTypeUint32 theObject:@(self.innerParallelism)];
+    VariantObject *voMemory = [[VariantObject alloc] initWithType:kVariantTypeUint64 theObject:@(self.innerMemory)];
     VariantObject *voVersion = [[VariantObject alloc] initWithType:kVariantTypeUint32 theObject:@(self.version)];
     VariantObject *voSalt = [[VariantObject alloc] initWithType:kVariantTypeByteArray theObject:self.salt];
     
@@ -181,6 +209,34 @@ static const BOOL kLogVerbose = NO;
 
 - (NSData *)transformSeed {
     return self.salt;
+}
+
++ (uint64_t)defaultMemory {
+    return kDefaultMemory;
+}
+
++ (uint64_t)defaultIterations {
+    return kDefaultIterations;
+}
+
++ (uint32_t)defaultParallelism {
+    return kDefaultParallelism;
+}
+
++ (uint64_t)maxRecommendedMemory {
+    return kMaxRecommendedMemory;
+}
+
+- (uint64_t)iterations {
+    return self.innerIterations;
+}
+
+- (uint64_t)memory {
+    return self.innerMemory;
+}
+
+- (uint32_t)parallelism {
+    return self.innerParallelism;
 }
 
 @end

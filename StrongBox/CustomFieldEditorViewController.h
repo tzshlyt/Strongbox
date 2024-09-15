@@ -3,7 +3,7 @@
 //  test-new-ui
 //
 //  Created by Mark on 23/04/2019.
-//  Copyright © 2019 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import <UIKit/UIKit.h>
@@ -16,6 +16,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nullable) CustomFieldViewModel* customField;
 @property (nonatomic, copy, nullable) void (^onDone)(CustomFieldViewModel* field);
 @property NSSet<NSString*> *customFieldsKeySet;
+@property BOOL colorizeValue;
 
 @end
 

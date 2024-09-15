@@ -7,9 +7,24 @@
 //
 
 #import <Cocoa/Cocoa.h>
+#import "MacDatabasePreferences.h"
+#import "DatabaseModel.h"
+#import "Document.h"
+
+NS_ASSUME_NONNULL_BEGIN
 
 @interface DocumentController : NSDocumentController
 
-- (void)originalOpenDocument:(id)sender;
+- (IBAction)originalOpenDocument:(id _Nullable)sender;
+- (void)originalOpenDocumentWithFileSelection;
+
+- (void)openDatabase:(MacDatabasePreferences*)database completion:(void (^_Nullable)(Document*_Nullable document, NSError* _Nullable error))completion;
+
+- (Document*_Nullable)documentForDatabase:(NSString*)uuid;
+
+- (void)onAppStartup;
+- (void)launchStartupDatabasesOrShowManagerIfNoDocumentsAvailable;
 
 @end
+
+NS_ASSUME_NONNULL_END

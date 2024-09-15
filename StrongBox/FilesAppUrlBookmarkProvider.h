@@ -3,7 +3,7 @@
 //  Strongbox
 //
 //  Created by Mark on 05/12/2018.
-//  Copyright © 2018 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import <Foundation/Foundation.h>
@@ -15,19 +15,17 @@ NS_ASSUME_NONNULL_BEGIN
 
 + (instancetype)sharedInstance;
 
-@property (strong, nonatomic, readonly) NSString *displayName;
-@property (strong, nonatomic, readonly) NSString *icon;
 @property (nonatomic, readonly) StorageProvider storageId;
-@property (nonatomic, readonly) BOOL allowOfflineCache;
 @property (nonatomic, readonly) BOOL providesIcons;
 @property (nonatomic, readonly) BOOL browsableNew;
 @property (nonatomic, readonly) BOOL browsableExisting;
 @property (nonatomic, readonly) BOOL rootFolderOnly;
+@property (nonatomic, readonly) BOOL defaultForImmediatelyOfferOfflineCache;
+@property (nonatomic, readonly) BOOL supportsConcurrentRequests;
+@property (nonatomic, readonly) BOOL privacyOptInRequired;
 
-- (SafeMetaData *)getSafeMetaData:(NSString *)nickName fileName:(NSString*)fileName providerData:(NSObject *)providerData;
-
-- (BOOL)autoFillBookMarkIsSet:(SafeMetaData*)metadata;
-- (SafeMetaData*)setAutoFillBookmark:(NSData*)bookmark metadata:(SafeMetaData*)metadata;
+- (NSString* _Nullable)getJsonFileIdentifier:(NSData*)bookmark;
+- (DatabasePreferences *)getDatabasePreferences:(NSString *)nickName fileName:(NSString*)fileName providerData:(NSObject *)providerData;
 
 @end
 

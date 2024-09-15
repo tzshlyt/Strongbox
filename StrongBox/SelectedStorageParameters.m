@@ -3,7 +3,7 @@
 //  Strongbox-iOS
 //
 //  Created by Mark on 01/06/2019.
-//  Copyright © 2019 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import "SelectedStorageParameters.h"
@@ -29,11 +29,14 @@
     return ret;
 }
 
-+ (instancetype)parametersForFilesApp:(NSURL*)url {
++ (instancetype)parametersForFilesApp:(NSURL*)url withProvider:(id<SafeStorageProvider>)provider makeALocalCopy:(BOOL)makeALocalCopy {
     SelectedStorageParameters* ret = [[SelectedStorageParameters alloc] init];
     
+    ret.provider = provider;
     ret.method = kStorageMethodFilesAppUrl;
+    ret.parentFolder = url;
     ret.url = url;
+    ret.filesAppMakeALocalCopy = makeALocalCopy;
     
     return ret;
 }
@@ -47,13 +50,19 @@
     return ret;
 }
 
-+ (instancetype)parametersForNativeProviderExisting:(id<SafeStorageProvider>)provider file:(StorageBrowserItem*)file likelyFormat:(DatabaseFormat)likelyFormat {
++ (instancetype)parametersForNativeProviderExisting:(id<SafeStorageProvider>)provider
+                                               file:(StorageBrowserItem *)file
+                                       likelyFormat:(DatabaseFormat)likelyFormat
+                                               data:(NSData *)data
+                                initialDateModified:(NSDate *)initialDateModified {
     SelectedStorageParameters* ret = [[SelectedStorageParameters alloc] init];
     
     ret.method = kStorageMethodNativeStorageProvider;
     ret.provider = provider;
     ret.file = file;
     ret.likelyFormat = likelyFormat;
+    ret.data = data;
+    ret.initialDateModified = initialDateModified;
     
     return ret;
 }
@@ -71,7 +80,7 @@
 - (NSString *)description
 {
     return [NSString stringWithFormat:@"Method: %d, error: [%@], url: [%@], provider: [%@]",
-            self.method, self.error, self.url, self.provider ? self.provider.displayName : @"nil"];
+            self.method, self.error, self.url, self.provider ? @(self.provider.storageId) : @"nil"];
 }
 
 @end

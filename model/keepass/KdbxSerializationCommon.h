@@ -3,7 +3,7 @@
 //  Strongbox
 //
 //  Created by Mark on 26/10/2018.
-//  Copyright © 2018 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import <Foundation/Foundation.h>
@@ -12,7 +12,7 @@
 #import "XmlProcessingContext.h"
 #import "CompositeKeyFactors.h"
 
-typedef struct _KeepassHeader {
+typedef struct _KeepassFileHeader {
     uint8_t signature1[4];
     uint8_t signature2[4];
     uint16_t minor;
@@ -33,13 +33,31 @@ typedef NS_ENUM (NSUInteger, HeaderEntryIdentifier) {
     STREAMSTARTBYTES = 9,
     INNERRANDOMSTREAMID = 10,
     KDFPARAMETERS = 11,
+    PUBLIC_CUSTOM_DATA = 12,
 };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 NS_ASSUME_NONNULL_BEGIN
 
 @interface KdbxSerializationCommon : NSObject
 
-BOOL keePass2SignatureAndVersionMatch(NSData * candidate, uint32_t majorVersion, uint32_t minorVersion, NSError** error);
+BOOL keePass2SignatureAndVersionMatch(NSData * prefix, uint32_t majorVersion, uint32_t minorVersion, NSError** error);
 
 KeepassFileHeader getKeePassFileHeader(NSData* data);
 KeepassFileHeader getNewFileHeader(NSString* version);
@@ -51,7 +69,22 @@ NSData *getMasterKey(NSData* masterSeed, NSData *transformKey);
 
 NSData*__nullable getAesTransformKey(NSData *compositeKey, NSData* transformSeed, uint64_t transformRounds);
 
-RootXmlDomainObject*__nullable parseKeePassXml(uint32_t innerRandomStreamId, NSData* innerRandomStreamKey, XmlProcessingContext* context, NSString* xml, NSError** error);
+
+
+
+
+
+
+
+
+RootXmlDomainObject*_Nullable parseXml(uint32_t innerRandomStreamId,
+                              NSData* innerRandomStreamKey,
+                              XmlProcessingContext* context,
+                              NSInputStream* stream,
+                              NSOutputStream*_Nullable xmlDumpStream,
+                              BOOL sanityCheckStreamDecryption,
+                              NSError** decryptionError,
+                              NSError** error);
 
 @end
 

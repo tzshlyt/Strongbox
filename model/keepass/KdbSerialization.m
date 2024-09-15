@@ -3,7 +3,7 @@
 //  Strongbox
 //
 //  Created by Mark on 08/11/2018.
-//  Copyright © 2018 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import "KdbSerialization.h"
@@ -16,6 +16,9 @@
 #import "KdbSerializationData.h"
 #import "KeePassConstants.h"
 #import <CommonCrypto/CommonDigest.h>
+#import "NSString+Extensions.h"
+#import "NSData+Extensions.h"
+#import "StrongboxErrorCodes.h"
 
 typedef struct _KdbHeader {
     uint8_t signature1[4];
@@ -59,7 +62,7 @@ static const BOOL kLogVerbose = NO;
         header->signature1[1] != 0xD9 ||
         header->signature1[2] != 0xA2 ||
         header->signature1[3] != 0x9A) {
-        //NSLog(@"No Keepass magic");
+        
         if(error) {
             *error = [Utils createNSError:@"No Keepass magic" errorCode:-1];
         }
@@ -75,7 +78,7 @@ static const BOOL kLogVerbose = NO;
             *error = [Utils createNSError:@"No Keepass magic (2)" errorCode:-1];
         }
 
-        //NSLog(@"No Keepass magic 2");
+        
         return NO;
     }
 
@@ -84,13 +87,13 @@ static const BOOL kLogVerbose = NO;
 
 static NSData *getComposite(NSString * _Nonnull password, NSData * _Nullable keyFileDigest) {
     if(password.length && !keyFileDigest) {
-        return sha256([password dataUsingEncoding:NSUTF8StringEncoding]);
+        return password.sha256Data;
     }
     else if(keyFileDigest && !password.length) {
         return keyFileDigest;
     }
     else {
-        NSData* hashedPassword = sha256([password dataUsingEncoding:NSUTF8StringEncoding]);
+        NSData* hashedPassword = password.sha256Data;
         
         NSMutableData *compositeKey = [NSMutableData dataWithLength:CC_SHA256_DIGEST_LENGTH ];
         CC_SHA256_CTX context;
@@ -111,7 +114,7 @@ static NSData *getComposite(NSString * _Nonnull password, NSData * _Nullable key
 
 + (KdbSerializationData*)deserialize:(NSData*)data password:(NSString*)password keyFileDigest:(NSData *)keyFileDigest ppError:(NSError**)error {
     if(data.length < SIZE_OF_KDB_HEADER) {
-        NSLog(@"Not a valid KDB file. Not long enough.");
+        slog(@"Not a valid KDB file. Not long enough.");
         if(error) {
             *error = [Utils createNSError:@"Not a valid KDB file. Not long enough" errorCode:-1];
         }
@@ -131,33 +134,33 @@ static NSData *getComposite(NSString * _Nonnull password, NSData * _Nullable key
     uint32_t transformRounds = littleEndian4BytesToUInt32(header->transformRounds);
 
     if(kLogVerbose) {
-        NSLog(@"DESERIALIZE");
-        NSLog(@"flags = %0.8X", flags);
-        NSLog(@"version = %0.8X", version);
-        NSLog(@"masterSeed = %@", [masterSeed base64EncodedStringWithOptions:kNilOptions]);
-        NSLog(@"encryptionIv = %@", [encryptionIv base64EncodedStringWithOptions:kNilOptions]);
-        NSLog(@"cGroups = %d", cGroups);
-        NSLog(@"cEntries = %d", cEntries);
-        NSLog(@"contentsSha256 = %@", [contentsSha256 base64EncodedStringWithOptions:kNilOptions]);
-        NSLog(@"transformSeed = %@", [transformSeed base64EncodedStringWithOptions:kNilOptions]);
-        NSLog(@"transformRounds = %d", transformRounds);
+        slog(@"DESERIALIZE");
+        slog(@"flags = %0.8X", flags);
+        slog(@"version = %0.8X", version);
+        slog(@"masterSeed = %@", [masterSeed base64EncodedStringWithOptions:kNilOptions]);
+        slog(@"encryptionIv = %@", [encryptionIv base64EncodedStringWithOptions:kNilOptions]);
+        slog(@"cGroups = %d", cGroups);
+        slog(@"cEntries = %d", cEntries);
+        slog(@"contentsSha256 = %@", [contentsSha256 base64EncodedStringWithOptions:kNilOptions]);
+        slog(@"transformSeed = %@", [transformSeed base64EncodedStringWithOptions:kNilOptions]);
+        slog(@"transformRounds = %d", transformRounds);
     }
     
     if(cGroups == 0) {
-        NSLog(@"Not a valid KDB file. Zero Groups.");
+        slog(@"Not a valid KDB file. Zero Groups.");
         if(error) {
             *error = [Utils createNSError:@"Not a valid KDB file. Zero Groups." errorCode:-2];
         }
         return nil;
     }
     
-    // MMcG: This is incorrect. Need to remove the contentshash field from the header and then hash...
-    //NSLog(@"HEADERHASH: %@", [sha256([data subdataWithRange:NSMakeRange(0, SIZE_OF_KDB_HEADER)]) base64EncodedStringWithOptions:kNilOptions]);
+    
+    
     
     size_t length = data.length - SIZE_OF_KDB_HEADER;
     
     if((length % kBlockSize) != 0) {
-        NSLog(@"Database Length is not a multiple of the blocksize. This file is likely corrupt.");
+        slog(@"Database Length is not a multiple of the blocksize. This file is likely corrupt.");
         if(error) {
             *error = [Utils createNSError:@"Database Length is not a multiple of the blocksize. This file is likely corrupt." errorCode:-4];
         }
@@ -167,7 +170,7 @@ static NSData *getComposite(NSString * _Nonnull password, NSData * _Nullable key
     NSData* compositeKey = getComposite(password, keyFileDigest);
     
     
-    //NSLog(@"DESERIALIZE: COMPOSITE KEY: [%@]", [compositeKey base64EncodedStringWithOptions:kNilOptions]);
+    
     
     NSData *transformKey = getAesTransformKey(compositeKey, transformSeed, transformRounds);
     NSData *masterKey = getMasterKey(masterSeed, transformKey);
@@ -175,7 +178,7 @@ static NSData *getComposite(NSString * _Nonnull password, NSData * _Nullable key
     
     id<Cipher> cipher = getCipher(flags);
     if(cipher == nil) {
-        NSLog(@"Unknown Cipher. Cannot open this file.");
+        slog(@"Unknown Cipher. Cannot open this file.");
         if(error) {
             *error = [Utils createNSError:@"Unknown Cipher. Cannot open this file." errorCode:-3];
         }
@@ -184,12 +187,12 @@ static NSData *getComposite(NSString * _Nonnull password, NSData * _Nullable key
     
     NSData *pt = [cipher decrypt:ct iv:encryptionIv key:masterKey];
 
-    //NSLog(@"DESERIALIZE: [%@] - %lu", [sha256(pt) base64EncodedStringWithOptions:kNilOptions], (unsigned long)pt.length);
+    
 
-    if(![sha256(pt) isEqualToData:contentsSha256]) {
-        NSLog(@"Actual Database Contents Hash does not match expected. This file is corrupt or the password is incorect.");
+    if(![pt.sha256 isEqualToData:contentsSha256]) {
+        slog(@"Actual Database Contents Hash does not match expected. This file is corrupt or the password is incorect.");
         if(error) {
-            *error = [Utils createNSError:@"Incorrect Passphrase/Key File (Composite Key) or Corrupt File." errorCode:kStrongboxErrorCodeIncorrectCredentials];
+            *error = [Utils createNSError:@"Incorrect Passphrase/Key File (Composite Key) or Corrupt File." errorCode:StrongboxErrorCodes.incorrectCredentials];
         }
         return nil;
     }
@@ -202,7 +205,7 @@ static NSData *getComposite(NSString * _Nonnull password, NSData * _Nullable key
     for(int i=0;i<cGroups;i++) {
         KdbGroup* group = readGroup(&position, eof);
         if(!group) {
-            NSLog(@"Could not read group.");
+            slog(@"Could not read group.");
             if(error) {
                 *error = [Utils createNSError:@"Could not read group." errorCode:-6];
             }
@@ -214,7 +217,7 @@ static NSData *getComposite(NSString * _Nonnull password, NSData * _Nullable key
     for(int i=0;i<cEntries;i++) {
         KdbEntry* entry = readEntry(&position, eof);
         if(!entry) {
-            NSLog(@"Could not read entry.");
+            slog(@"Could not read entry.");
             if(error) {
                 *error = [Utils createNSError:@"Could not read entry." errorCode:-7];
             }
@@ -238,11 +241,11 @@ static NSData *getComposite(NSString * _Nonnull password, NSData * _Nullable key
 
 + (NSData*)serialize:(KdbSerializationData*)serializationData password:(NSString*)password keyFileDigest:(NSData *)keyFileDigest ppError:(NSError**)error {
     if(kLogVerbose) {
-        NSLog(@"SERIALIZE: %@", serializationData);
+        slog(@"SERIALIZE: %@", serializationData);
     }
     
     if(serializationData.groups.count == 0) {
-        NSLog(@"Not a valid KDB file. Zero Groups.");
+        slog(@"Not a valid KDB file. Zero Groups.");
         if(error) {
             *error = [Utils createNSError:@"Not a valid database. Zero Groups." errorCode:-1];
         }
@@ -262,12 +265,12 @@ static NSData *getComposite(NSString * _Nonnull password, NSData * _Nullable key
         [pt appendData:writeEntry(entry)];
     }
     
-    NSData* contentsHash = sha256(pt);
-    //NSLog(@"SERIALIZE: [%@] - %lu", [contentsHash base64EncodedStringWithOptions:kNilOptions], (unsigned long)pt.length);
+    NSData* contentsHash = pt.sha256;
+    
     
     NSData *compositeKey = getComposite(password, keyFileDigest);
     
-    //NSLog(@"SERIALIZE: COMPOSITE KEY: [%@]", [compositeKey base64EncodedStringWithOptions:kNilOptions]);
+    
     
     NSData* transformSeed = getRandomData(kDefaultTransformSeedLength);
     NSData* transformKey = getAesTransformKey(compositeKey, transformSeed, serializationData.transformRounds);
@@ -280,19 +283,19 @@ static NSData *getComposite(NSString * _Nonnull password, NSData * _Nullable key
 
     NSData *ct = [cipher encrypt:pt iv:encryptionIv key:masterKey];
 
-    // Header
+    
 
     if(kLogVerbose) {
-        NSLog(@"SERIALIZE");
-        NSLog(@"flags = %0.8X", serializationData.flags);
-        NSLog(@"version = %0.8X", serializationData.version);
-        NSLog(@"masterSeed = %@", [masterSeed base64EncodedStringWithOptions:kNilOptions]);
-        NSLog(@"encryptionIv = %@", [encryptionIv base64EncodedStringWithOptions:kNilOptions]);
-        NSLog(@"cGroups = %lu", (unsigned long)serializationData.groups.count);
-        NSLog(@"cEntries = %lu", (unsigned long)serializationData.entries.count + (unsigned long)serializationData.metaEntries.count);
-        NSLog(@"contentsSha256 = %@", [contentsHash base64EncodedStringWithOptions:kNilOptions]);
-        NSLog(@"transformSeed = %@", [transformSeed base64EncodedStringWithOptions:kNilOptions]);
-        NSLog(@"transformRounds = %d", serializationData.transformRounds);
+        slog(@"SERIALIZE");
+        slog(@"flags = %0.8X", serializationData.flags);
+        slog(@"version = %0.8X", serializationData.version);
+        slog(@"masterSeed = %@", [masterSeed base64EncodedStringWithOptions:kNilOptions]);
+        slog(@"encryptionIv = %@", [encryptionIv base64EncodedStringWithOptions:kNilOptions]);
+        slog(@"cGroups = %lu", (unsigned long)serializationData.groups.count);
+        slog(@"cEntries = %lu", (unsigned long)serializationData.entries.count + (unsigned long)serializationData.metaEntries.count);
+        slog(@"contentsSha256 = %@", [contentsHash base64EncodedStringWithOptions:kNilOptions]);
+        slog(@"transformSeed = %@", [transformSeed base64EncodedStringWithOptions:kNilOptions]);
+        slog(@"transformRounds = %d", serializationData.transformRounds);
     }
     
     KdbHeader header;
@@ -327,7 +330,7 @@ static id<Cipher> getCipher(uint32_t flags) {
         return nil;
     }
 }
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 
 NSData* writeField(uint16_t type, NSData* data) {
     NSMutableData *ret = [NSMutableData data];
@@ -393,17 +396,14 @@ static NSData* stringtoKeePassData(NSString* str) {
     const char *utf8 = foo.UTF8String;
     size_t len = strlen(utf8);
     
-    return [NSData dataWithBytes:utf8 length:len + 1]; // Null Term
+    return [NSData dataWithBytes:utf8 length:len + 1]; 
 }
 
 static NSString* keePassDataToString(uint8_t *data) {
-    NSString* ret = [[NSString alloc] initWithCString:(char*)data encoding:NSUTF8StringEncoding];
-    
-    // TODO: Remove after patching up databases? Or is this pretty safe to assume we can remove these garbage characters?
-    return [ret stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"\x03\x05\x06\x07\x08\x09"]];
+    return [[NSString alloc] initWithCString:(char*)data encoding:NSUTF8StringEncoding];
 }
 
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 
 typedef void (*updateItemWithFieldFn)(uint16_t type, uint32_t length, uint8_t *data, NSObject* item);
 
@@ -451,18 +451,18 @@ NSObject* readItem(uint8_t** position, uint8_t* eof, NSObject* item, updateItemW
 void updateGroupWithField(uint16_t type, uint32_t length, uint8_t *data, KdbGroup* group) {
     switch (type) {
         case 0x0000:
-//            if(length) {
-//                FieldHeader *foo = (FieldHeader*)data;
-//                uint16_t t = littleEndian2BytesToUInt16(foo->type);
-//                uint32_t l = littleEndian4BytesToUInt32(foo->length);
-//                NSData *bar = [NSData dataWithBytes:foo->data length:l];
-//
-//                NSLog(@"EXT DATA: %d = %@", t, [bar base64EncodedStringWithOptions:kNilOptions]);
-//            }
-//            group.extData = [NSData dataWithBytes:data length:length];
+
+
+
+
+
+
+
+
+
             break;
         case 0x0001:
-            group.groupId = littleEndian4BytesToInt32(data);
+            group.groupId = littleEndian4BytesToUInt32(data);
             break;
         case 0x0002:
             group.name = keePassDataToString(data);
@@ -480,13 +480,13 @@ void updateGroupWithField(uint16_t type, uint32_t length, uint8_t *data, KdbGrou
             group.expiry = keePass1TimeToDate(data);
             break;
         case 0x0007:
-            group.imageId = @(littleEndian4BytesToInt32(data));
+            group.imageId = @(littleEndian4BytesToUInt32(data));
             break;
         case 0x0008:
             group.level = littleEndian2BytesToUInt16(data);
             break;
         case 0x0009:
-            group.flags = littleEndian4BytesToInt32(data);
+            group.flags = littleEndian4BytesToUInt32(data);
             break;
         default:
             break;
@@ -496,16 +496,16 @@ void updateGroupWithField(uint16_t type, uint32_t length, uint8_t *data, KdbGrou
 void updateEntryWithField(uint16_t type, uint32_t length, uint8_t *data, KdbEntry* entry) {
     switch (type) {
         case 0x0000:
-            //entry.extData = [NSData dataWithBytes:data length:length];
+            
             break;
         case 0x0001:
             entry.uuid = [[NSUUID alloc] initWithUUIDBytes:data];
             break;
         case 0x0002:
-            entry.groupId = littleEndian4BytesToInt32(data);
+            entry.groupId = littleEndian4BytesToUInt32(data);
             break;
         case 0x0003:
-            entry.imageId = @(littleEndian4BytesToInt32(data));
+            entry.imageId = @(littleEndian4BytesToUInt32(data));
             break;
         case 0x0004:
             entry.title = keePassDataToString(data);

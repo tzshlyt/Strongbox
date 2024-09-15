@@ -3,10 +3,11 @@
 //  Strongbox-iOS
 //
 //  Created by Mark on 05/11/2018.
-//  Copyright © 2018 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import <Foundation/Foundation.h>
+#import "SBLog.h"
 
 static const uint8_t kVariantTypeUint32 = 0x04;
 static const uint8_t kVariantTypeUint64 = 0x05;

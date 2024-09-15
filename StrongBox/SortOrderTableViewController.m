@@ -3,7 +3,7 @@
 //  Strongbox-iOS
 //
 //  Created by Mark on 11/06/2019.
-//  Copyright © 2019 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import "SortOrderTableViewController.h"
@@ -32,12 +32,9 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
 
-    // Effective Settings based on format
     
-    if(self.field == kBrowseSortFieldEmail && self.format != kPasswordSafe) {
-        self.field = kBrowseSortFieldTitle;
-    }
-    else if(self.field == kBrowseSortFieldNone && self.format == kPasswordSafe) {
+
+    if(self.field == kBrowseSortFieldNone && self.format == kPasswordSafe) {
         self.field = kBrowseSortFieldTitle;
     }
     
@@ -60,14 +57,11 @@
 
     self.cellFolders.accessoryType = self.foldersSeparately ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
 
-    // Show / Hide based on format and select field
-    
-    [self cell:self.cellEmail setHidden:self.format != kPasswordSafe];
     [self cell:self.cellCustom setHidden:self.format == kPasswordSafe];
     
     [self cell:self.cellAscending setHidden:self.field == kBrowseSortFieldNone];
     [self cell:self.cellDescending setHidden:self.field == kBrowseSortFieldNone];
-    [self cell:self.cellFolders setHidden:self.field == kBrowseSortFieldNone];
+    
     
     [self reloadDataAnimated:animated];
 }

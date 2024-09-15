@@ -3,7 +3,7 @@
 //  StrongBox
 //
 //  Created by Mark on 28/05/2017.
-//  Copyright © 2017 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 //    [12] Password History is an optional record. If it exists, it stores the
 //    creation times and values of the last few passwords used in the current
@@ -14,17 +14,17 @@
 //        mm = 2 hexadecimal digits max size of history list (i.e. max = 255)
 //        nn = 2 hexadecimal digits current size of history list
 //        T  = Time password was set (time_t written out in %08x)
-//        L  = 4 hexadecimal digit password length (in TCHAR)
-//        P  = Password
-//        No history being kept for a record can be represented either by the lack of
-//            the PWH field (preferred), or by a header of _T("00000"):
-//            flag = 0, max = 00, num = 00
-//            Note that 0aabb, where bb <= aa, is possible if password history was enabled
-//                in the past and has then been disabled but the history hasn't been cleared.
-//
 
-// PWHIST => 10603592b151b0003abc592b153d0003def592b154f0003ghi =>
-// bytes[<31303630 33353932 62313531 62303030 33616263 35393262 31353364 30303033 64656635 39326231 35346630 30303367 6869>]
+
+
+
+
+
+
+
+
+
+
 
 #import "PasswordHistory.h"
 
@@ -46,14 +46,14 @@
 - (instancetype)initWithData:(NSData *)data {
     if (self = [self init]) {
         if (data.length < SIZE_OF_HEADER) {
-            NSLog(@"Invalid data for pwhist. Needs to be minimum 5 bytes for header. %@", data);
+            slog(@"Invalid data for pwhist. Needs to be minimum 5 bytes for header. %@", data);
             return nil;
         }
 
         Header header;
         [data getBytes:&header length:5];
 
-        //NSLog(@"PWHIST Header: %@", header);
+        
 
         _enabled = (header.enabled == '1');
         
@@ -64,7 +64,7 @@
 
         for (int i = 0; i < numberOfEntries; i++) {
             if (data.length < (currentEntryStartOffset + SIZE_OF_ENTRY_HEADER)) {
-                NSLog(@"Invalid size for pwhist. %@", data);
+                slog(@"Invalid size for pwhist. %@", data);
                 return nil;
             }
 
@@ -77,7 +77,7 @@
 
             NSUInteger passwordLength = [self getIntegerFromHexCharArray:entryHeader.passwordLength length:4];
             if (data.length < (currentEntryStartOffset + SIZE_OF_ENTRY_HEADER + passwordLength)) {
-                NSLog(@"Invalid current size for pwhist. %@", data);
+                slog(@"Invalid current size for pwhist. %@", data);
                 return nil;
             }
 
@@ -109,7 +109,14 @@
     for (int i = 0; i < (self.entries).count; i++) {
         PasswordHistoryEntry *entry = (self.entries)[i];
         entriesSize += SIZE_OF_ENTRY_HEADER;
-        entriesSize += strlen((entry.password).UTF8String);
+        
+        if(entry.password) {
+            NSData* encoded = [entry.password dataUsingEncoding:NSUTF8StringEncoding allowLossyConversion:YES];
+            
+            if(encoded) {
+                entriesSize += encoded.length;
+            }
+        }
     }
 
     int bufSize = SIZE_OF_HEADER + entriesSize;
@@ -126,11 +133,25 @@
 
         sprintf(entryStart, "%08lx", (unsigned long)[entry.timestamp timeIntervalSince1970]);
 
-        const char *password = (entry.password).UTF8String;
-        sprintf(entryStart + 8, "%04lx", strlen(password));
-        sprintf(entryStart + 12, "%s", password);
-
-        entryStart += 8 + 4 + strlen(password);
+        if(entry.password) {
+            NSData* encoded = [entry.password dataUsingEncoding:NSUTF8StringEncoding allowLossyConversion:YES];
+            
+            if(encoded) {
+                sprintf(entryStart + 8, "%04lx", (unsigned long)encoded.length);
+                if(encoded.length) {
+                    memcpy(entryStart + 12, encoded.bytes, encoded.length);
+                }
+                entryStart += SIZE_OF_ENTRY_HEADER + encoded.length;
+            }
+            else {
+                sprintf(entryStart + 8, "%04lx", (unsigned long)0);
+                entryStart += SIZE_OF_ENTRY_HEADER;
+            }
+        }
+        else {
+            sprintf(entryStart + 8, "%04lx", (unsigned long)0);
+            entryStart += SIZE_OF_ENTRY_HEADER;
+        }
     }
 
     return [[NSData alloc] initWithBytes:buf length:bufSize];
@@ -159,6 +180,16 @@
     }
     
     return strtoul(c, NULL, 16);
+}
+
+- (instancetype)clone {
+    PasswordHistory* ret = [[PasswordHistory alloc] init];
+    
+    ret.enabled = self.enabled;
+    ret.maximumSize = self.maximumSize;
+    ret.entries = self.entries.mutableCopy;
+    
+    return ret;
 }
 
 @end

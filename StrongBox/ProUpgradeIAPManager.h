@@ -3,19 +3,13 @@
 //  Strongbox-iOS
 //
 //  Created by Mark on 04/02/2019.
-//  Copyright © 2019 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import <Foundation/Foundation.h>
 #import <StoreKit/StoreKit.h>
 
 NS_ASSUME_NONNULL_BEGIN
-
-static NSString* const kIapProId =  @"com.markmcguill.strongbox.pro";
-static NSString* const kMonthly =  @"com.strongbox.markmcguill.upgrade.pro.monthly";
-static NSString* const k3Monthly =  @"com.strongbox.markmcguill.upgrade.pro.3monthly";
-static NSString* const kYearly =  @"com.strongbox.markmcguill.upgrade.pro.yearly";
-//kTestConsumable @"com.markmcguill.strongbox.testconsumable"
 
 typedef NS_ENUM (unsigned int, UpgradeManagerState) {
     kInitial,
@@ -38,8 +32,22 @@ typedef void (^ProductsAvailableNotificationBlock)(void);
 
 - (void)initialize;
 - (void)restorePrevious:(RestoreCompletionBlock)completion;
-- (void)purchase:(NSString*)productId completion:(PurchaseCompletionBlock)completion;
-- (void)performScheduledProEntitlementsCheckIfAppropriate:(UIViewController*)vc;
+- (void)refreshReceiptAndCheckForProEntitlements:(void(^)(void))completion;
+
+@property (readonly, nullable) SKProduct* monthlyProduct;
+@property (readonly, nullable) SKProduct* yearlyProduct;
+
+@property (readonly) BOOL isFreeTrialAvailable;
+
+- (void)purchaseAndCheckReceipts:(SKProduct*)product completion:(PurchaseCompletionBlock)completion;
+
+- (void)performScheduledProEntitlementsCheckIfAppropriate;
+
+@property (readonly) BOOL hasActiveYearlySubscription;
+@property (readonly) BOOL hasActiveMonthlySubscription;
+@property (readonly) BOOL isLegacyLifetimeIAPPro;
+
+@property (readonly, nullable) NSDate* currentSubscriptionRenewalOrExpiry;
 
 @end
 

@@ -7,9 +7,19 @@
 //
 
 #import <Foundation/Foundation.h>
-#import "PasswordGenerationParameters.h"
 #import "PasswordGenerationConfig.h"
 #import "AutoFillNewRecordSettings.h"
+#import "FavIconDownloadOptions.h"
+#import "ApplicationPreferences.h"
+
+typedef enum : NSUInteger {
+    kSystemMenuClickActionQuickSearch,
+    kSystemMenuClickActionShowStrongbox,
+    kSystemMenuClickActionPasswordGenerator,
+    kSystemMenuClickActionShowMenu,
+} SystemMenuClickAction;
+
+NS_ASSUME_NONNULL_BEGIN
 
 extern NSString* const kTitleColumn;
 extern NSString* const kUsernameColumn;
@@ -17,90 +27,171 @@ extern NSString* const kPasswordColumn;
 extern NSString* const kTOTPColumn;
 extern NSString* const kURLColumn;
 extern NSString* const kEmailColumn;
+extern NSString* const kExpiresColumn;
 extern NSString* const kNotesColumn;
 extern NSString* const kAttachmentsColumn;
 extern NSString* const kCustomFieldsColumn;
 
-@interface Settings : NSObject
+@interface Settings : NSObject<ApplicationPreferences>
 
 + (instancetype)sharedInstance;
 
+#ifndef IS_APP_EXTENSION
+- (void)factoryReset;
+#endif
+
+@property (readonly) NSString* appGroupName;
+@property (readonly) NSUserDefaults* sharedAppGroupDefaults;
+
 + (NSArray<NSString*> *)kAllColumns;
 
-@property (nonatomic) BOOL revealDetailsImmediately;
-@property (nonatomic) BOOL fullVersion;
-
-@property (nonatomic, readonly) BOOL freeTrial;
-@property (nonatomic, readonly) NSInteger freeTrialDaysRemaining;
-@property (nonatomic, strong) NSDate* endFreeTrialDate;
-@property (nonatomic) NSInteger autoLockTimeoutSeconds;
-
-@property (nonatomic) BOOL alwaysShowPassword;
-@property (nonatomic) BOOL warnedAboutTouchId;
+@property (readonly) BOOL isPro;
+- (void)setPro:(BOOL)value;
 
 @property (nonatomic) AutoFillNewRecordSettings *autoFillNewRecordSettings;
+
+@property BOOL floatOnTop;
+@property (readonly) NSString* easyReadFontName;
+@property PasswordGenerationConfig *trayPasswordGenerationConfig;
+
+@property BOOL showSystemTrayIcon;
+@property FavIconDownloadOptions *favIconDownloadOptions;
+@property BOOL hideKeyFileNameOnLockScreen;
+@property BOOL doNotRememberKeyFile;
+@property BOOL allowEmptyOrNoPasswordEntry;
+@property BOOL colorizePasswords;
+@property BOOL colorizeUseColorBlindPalette;
+@property BOOL clipboardHandoff;
+
+@property BOOL showDatabasesManagerOnCloseAllWindows;
+
+@property BOOL showAutoFillTotpCopiedMessage;
+
 @property (nonatomic) BOOL autoSave;
 
-@property BOOL uiDoNotSortKeePassNodesInBrowseView;
-
+@property BOOL hideDockIconOnAllMinimized;
 @property BOOL clearClipboardEnabled;
 @property NSInteger clearClipboardAfterSeconds;
+@property (nonatomic) BOOL revealPasswordsImmediately;
 
-@property BOOL doNotShowTotp;
+@property (nonatomic) NSInteger autoLockTimeoutSeconds;
+@property (nonatomic) NSInteger autoLockIfInBackgroundTimeoutSeconds;
 
-@property BOOL doNotShowRecycleBinInBrowse;
-@property BOOL showRecycleBinInSearchResults;
+@property BOOL closeManagerOnLaunch;
+@property BOOL makeLocalRollingBackups;
 
-@property BOOL doNotFloatDetailsWindowOnTop;
-@property BOOL noAlternatingRows;
-@property BOOL showHorizontalGrid;
-@property BOOL showVerticalGrid;
+@property BOOL miniaturizeOnCopy;
+@property BOOL hideOnCopy;
+@property BOOL quickRevealWithOptionKey;
+@property BOOL markdownNotes;
+@property BOOL showPasswordGenInTray;
 
-@property BOOL doNotShowAutoCompleteSuggestions;
-@property BOOL doNotShowChangeNotifications;
-
-@property (readonly) NSString* easyReadFontName;
-
-@property NSArray<NSString*>* visibleColumns;
-
-@property BOOL outlineViewTitleIsReadonly;
-@property BOOL outlineViewEditableFieldsAreReadonly;
-
-@property BOOL dereferenceInQuickView;
-@property BOOL dereferenceInOutlineView;
-@property BOOL dereferenceDuringSearch;
-
-@property BOOL detectForeignChanges;
-@property BOOL autoReloadAfterForeignChanges;
-@property BOOL concealEmptyProtectedFields;
-@property BOOL showCustomFieldsOnQuickViewPanel;
-
-//@property BOOL showDatabasesListAtStartup;
+@property BOOL hasPromptedForThirdPartyAutoFill;
 
 
-@property PasswordGenerationConfig *passwordGenerationConfig;
-@property (nonatomic, strong) PasswordGenerationParameters *passwordGenerationParameters;
-@property BOOL migratedToNewPasswordGenerator;
 
-@property BOOL autoOpenFirstDatabaseOnEmptyLaunch;
 
-@property BOOL autoPromptForTouchIdOnActivate;
-@property BOOL showSystemTrayIcon;
+@property (nullable) NSData* duressDummyData;
+@property BOOL databasesAreAlwaysReadOnly;
+@property (nonatomic, strong) PasswordGenerationConfig* passwordGenerationConfig;
+@property PasswordStrengthConfig* passwordStrengthConfig;
+
+
+
+@property (readonly) BOOL configuredAsAMenuBarApp;
+
+@property BOOL checkPinYin;
+
+@property BOOL addLegacySupplementaryTotpCustomFields;
+@property BOOL addOtpAuthUrl;
+
+@property BOOL quitStrongboxOnAllWindowsClosed;
+
+@property BOOL showCopyFieldButton;
+@property BOOL lockEvenIfEditing;
+
+@property BOOL screenCaptureBlocked;
+
+@property BOOL hasShownFirstRunWelcome;
+
+@property NSUInteger freeTrialOrUpgradeNudgeCount;
+@property NSDate* lastFreeTrialOrUpgradeNudge;
+
+
+
+
+@property (nullable) NSDate* lastEntitlementCheckAttempt;
+@property NSUInteger numberOfEntitlementCheckFails;
+@property BOOL appHasBeenDowngradedToFreeEdition; 
+@property BOOL hasPromptedThatAppHasBeenDowngradedToFreeEdition;
+
+
+
+@property (nonatomic) NSDate* installDate;
+@property (nonatomic, readonly) NSInteger daysInstalled;
+
+@property (readonly) NSUInteger launchCount;
+- (void)incrementLaunchCount;
+
+@property BOOL useIsolatedDropbox;
+@property BOOL useParentGroupIconOnCreate;
+
+@property BOOL stripUnusedIconsOnSave;
+@property BOOL stripUnusedHistoricalIcons;
+
+@property BOOL runBrowserAutoFillProxyServer;
+
+@property BOOL quitTerminatesProcessEvenInSystemTrayMode;
+@property BOOL lockDatabaseOnWindowClose; 
+@property BOOL lockDatabasesOnScreenLock;
+@property BOOL showDatabasesManagerOnAppLaunch;
+
+@property BOOL hasAskedAboutDatabaseOpenInBackground;
+@property BOOL concealClipboardFromMonitors;
+
+@property BOOL autoCommitScannedTotp;
+@property BOOL runSshAgent;
+
+
+@property (nullable) NSString* businessOrganisationName;
+
+@property (nullable) NSDate* lastQuickTypeMultiDbRegularClear;
+
+@property (nonatomic) NSInteger sshAgentApprovalDefaultExpiryMinutes;
+
+@property BOOL sshAgentRequestDatabaseUnlockAllowed;
+@property BOOL sshAgentPreventRapidRepeatedUnlockRequests;
+
+@property BOOL autoFillWroteCleanly;
+@property BOOL atomicSftpWrite;
+
+@property BOOL runAsWiFiSyncSourceDevice;
+@property (nullable) NSString* wiFiSyncServiceName;
+
+@property (nullable) NSString* lastWiFiSyncPasscodeError;
+@property (nullable) NSString* wiFiSyncPasscode; 
+
+@property BOOL disableWiFiSyncClientMode;
+@property BOOL disableNetworkBasedFeatures;
+
+@property BOOL cloudKitZoneCreated;
+@property BOOL hasWarnedAboutCloudKitUnavailability;
+@property BOOL passwordGeneratorFloatOnTop;
+@property BOOL largeTextViewFloatOnTop;
+
+@property SystemMenuClickAction systemMenuClickAction;
+
+@property BOOL hardwareKeyCachingBeta;
+
+@property (nullable) NSData* lastKnownGoodBiometricsDatabaseState;
+@property (nullable) NSData* autoFillLastKnownGoodBiometricsDatabaseState;
+
+@property BOOL duplicateItemReferencePassword;
+@property BOOL duplicateItemReferenceUsername;
+@property BOOL duplicateItemPreserveTimestamp;
+@property BOOL duplicateItemEditAfterwards;
 
 @end
 
-//    [[Settings sharedInstance] setPro:NO];
-//    [[Settings sharedInstance] setEndFreeTrialDate:nil];
-//    [[Settings sharedInstance] setHavePromptedAboutFreeTrial:NO];
-//    [[Settings sharedInstance] resetLaunchCount];
-//    NSCalendar *cal = [NSCalendar currentCalendar];
-//    NSDate *date = [cal dateByAddingUnit:NSCalendarUnitDay value:9 toDate:[NSDate date] options:0];
-//    [[Settings sharedInstance] setEndFreeTrialDate:date];
 
-
-//    [[Settings sharedInstance] setFullVersion:NO];
-//[[Settings sharedInstance] setEndFreeTrialDate:nil];
-//    NSCalendar *cal = [NSCalendar currentCalendar];
-//    NSDate *date = [cal dateByAddingUnit:NSCalendarUnitDay value:-10 toDate:[NSDate date] options:0];
-//    [[Settings sharedInstance] setEndFreeTrialDate:date];
-//
+NS_ASSUME_NONNULL_END

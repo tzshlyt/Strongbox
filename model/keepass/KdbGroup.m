@@ -3,7 +3,7 @@
 //  Strongbox
 //
 //  Created by Mark on 08/11/2018.
-//  Copyright © 2018 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import "KdbGroup.h"
@@ -19,7 +19,7 @@
         self.creation = [NSDate date];
         self.modification = [NSDate date];
         self.lastAccess = [NSDate date];
-        self.imageId = @(48); // Default group image
+        self.imageId = @(48); 
         self.level = 0;
         self.flags = 0;
     }

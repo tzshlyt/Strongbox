@@ -3,54 +3,65 @@
 //  Strongbox
 //
 //  Created by Mark on 17/10/2018.
-//  Copyright © 2018 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import <Foundation/Foundation.h>
 #import "BaseXmlDomainObjectHandler.h"
-#import "GenericTextStringElementHandler.h"
-#import "GenericTextUuidElementHandler.h"
 #import "Times.h"
 #import "String.h"
 #import "Binary.h"
 #import "History.h"
 #import "StringValue.h"
+#import "KeePassGroupOrEntry.h"
+#import "CustomData.h"
+#import "KeePassXmlAutoType.h"
+#import "MutableOrderedDictionary.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
-@interface Entry : BaseXmlDomainObjectHandler
-
-+ (const NSSet<NSString*>*)reservedCustomFieldKeys;
+@interface Entry : BaseXmlDomainObjectHandler <KeePassGroupOrEntry>
 
 - (instancetype)initWithContext:(XmlProcessingContext*)context;
 
-@property (nonatomic, nullable) GenericTextStringElementHandler* iconId;
-@property (nonatomic, nullable) GenericTextUuidElementHandler* customIconUuid;
-@property (nonatomic) GenericTextUuidElementHandler* uuid;
+@property (nonatomic) NSUUID* uuid;
+@property (nonatomic, nullable) NSNumber* icon;
+@property (nonatomic, nullable) NSUUID* customIcon;
+@property (nullable) NSString* foregroundColor;
+@property (nullable) NSString* backgroundColor;
+@property (nullable) NSString* overrideURL;
+@property (nonatomic) NSMutableSet<NSString*> *tags;
 @property (nonatomic) Times* times;
+@property (nonatomic, nullable) CustomData* customData;
 @property (nonatomic) NSMutableArray<Binary*> *binaries;
+@property (nullable) KeePassXmlAutoType* autoType;
 @property (nonatomic) History* history;
 
-@property (nonatomic) NSNumber* icon;
-@property (nonatomic, nullable) NSUUID* customIcon;
 
-// Customized Getters/Setters for well-known fields - basically views on the strings collection
 
 @property (nonatomic) NSString* title;
 @property (nonatomic) NSString* username;
 @property (nonatomic) NSString* password;
 @property (nonatomic) NSString* url;
 @property (nonatomic) NSString* notes;
+- (void)removeAllStrings;
 
-// Safe Custom String setter...
 
-- (void)setString:(NSString*)key value:(NSString*)value; // Do not change protected attribute
+
+- (void)setString:(NSString*)key value:(NSString*)value; 
 - (void)setString:(NSString*)key value:(NSString*)value protected:(BOOL)protected;
 
-// R/O Handy View
 
-@property (nonatomic, readonly) NSDictionary<NSString*, StringValue*> *customStrings;
-@property (nonatomic, readonly) NSDictionary<NSString*, StringValue*> *allStrings;
+
+
+
+
+@property (nonatomic, readonly) MutableOrderedDictionary<NSString*, StringValue*> *customStringValues;
+@property (nonatomic, readonly) MutableOrderedDictionary<NSString*, StringValue*> *allStringValues;
+
+
+@property BOOL qualityCheck;
+@property (nullable) NSUUID* previousParentGroup;
 
 @end
 

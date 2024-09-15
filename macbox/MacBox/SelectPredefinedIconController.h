@@ -7,14 +7,20 @@
 //
 
 #import <Cocoa/Cocoa.h>
+#import "NodeIcon.h"
+#import "KeePassIconSet.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
 @interface SelectPredefinedIconController : NSWindowController
 
-@property (copy)void (^onSelectedItem)(NSNumber* _Nullable index, NSData* _Nullable data, NSUUID* _Nullable existingCustom);
+@property (copy)void (^onSelectedItem)(NodeIcon*_Nullable icon, BOOL showFindFavIcons);
+
 @property BOOL hideSelectFile;
-@property NSDictionary<NSUUID*, NSData*>* customIcons;
+@property BOOL hideFavIconButton;
+@property KeePassIconSet iconSet;
+
+@property NSArray<NodeIcon*>* iconPool;
 
 @end
 

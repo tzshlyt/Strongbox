@@ -3,7 +3,7 @@
 //  StrongBox
 //
 //  Created by Mark on 26/05/2017.
-//  Copyright © 2017 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import <Foundation/Foundation.h>
@@ -13,13 +13,18 @@
 
 + (instancetype)sharedInstance;
 
-@property (strong, nonatomic, readonly) NSString *displayName;
-@property (strong, nonatomic, readonly) NSString *icon;
 @property (nonatomic, readonly) StorageProvider storageId;
-@property (nonatomic, readonly) BOOL allowOfflineCache;
 @property (nonatomic, readonly) BOOL providesIcons;
 @property (nonatomic, readonly) BOOL browsableNew;
 @property (nonatomic, readonly) BOOL browsableExisting;
 @property (nonatomic, readonly) BOOL rootFolderOnly;
+@property (nonatomic, readonly) BOOL defaultForImmediatelyOfferOfflineCache;
+@property (nonatomic, readonly) BOOL supportsConcurrentRequests;
+@property (nonatomic, readonly) BOOL privacyOptInRequired;
 
+- (void)initialize:(BOOL)useIsolatedDropbox;
+- (BOOL)handleAuthRedirectUrl:(NSURL*)url;
+@property (readonly) BOOL isAuthorized;
+- (void)signOut;
+    
 @end

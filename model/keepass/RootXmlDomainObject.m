@@ -3,7 +3,7 @@
 //  Strongbox
 //
 //  Created by Mark on 18/10/2018.
-//  Copyright © 2018 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import "RootXmlDomainObject.h"
@@ -13,7 +13,7 @@
 @implementation RootXmlDomainObject
 
 - (instancetype)initWithContext:(XmlProcessingContext*)context {
-    return self = [super initWithXmlElementName:@"Dummy" context:context];
+    return [super initWithXmlElementName:@"Dummy" context:context];
 }
 
 - (instancetype)initWithDefaultsAndInstantiatedChildren:(XmlProcessingContext*)context {
@@ -34,7 +34,7 @@
     return [super getChildHandler:xmlElementName];
 }
 
-- (BOOL)addKnownChildObject:(nonnull NSObject *)completedObject withXmlElementName:(nonnull NSString *)withXmlElementName {
+- (BOOL)addKnownChildObject:(id<XmlParsingDomainObject>)completedObject withXmlElementName:(nonnull NSString *)withXmlElementName {
     if([withXmlElementName isEqualToString:kKeePassFileElementName]) {
         _keePassFile = (KeePassFile*)completedObject;
         return YES;
@@ -44,20 +44,14 @@
     }
 }
 
-- (XmlTree *)generateXmlTree {
-    XmlTree* ret = [[XmlTree alloc] initWithXmlElementName:@"Dummy"];
+- (BOOL)writeXml:(id<IXmlSerializer>)serializer {
+    if(self.keePassFile) {
+        if ( ![self.keePassFile writeXml:serializer] ) {
+            return NO;
+        }
+    }
     
-    ret.node = self.nonCustomisedXmlTree.node;
-   
-    if(self.keePassFile) [ret.children addObject:[self.keePassFile generateXmlTree]];
-    
-    [ret.children addObjectsFromArray:self.nonCustomisedXmlTree.children];
-    
-    return ret;
-}
-
-- (NSString *)description {
-    return [NSString stringWithFormat:@"KeePassFile = [%@]\nUnknown Children = [%@]", self.keePassFile, self.nonCustomisedXmlTree.children];
+    return [super writeUnmanagedChildren:serializer];
 }
 
 @end

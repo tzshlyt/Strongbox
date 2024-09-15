@@ -28,9 +28,10 @@
             _fields[type] = field;
         }
         
-        // Give record a UUID if it's not set
+        
         if (![self getFieldForType:FIELD_TYPE_UUID]) {
-            [self generateNewUUID];
+            NSUUID *unique = [[NSUUID alloc] init];
+            [self setUuid:unique];
         }
         
         return self;
@@ -44,7 +45,7 @@
     return _fields.allValues;
 }
 
-/////////////////////////////////////////////////////////////////////////////////////////////
+
 
 - (PasswordHistory *)passwordHistory {
     Field *field = [self getFieldForType:FIELD_TYPE_PWHIST];
@@ -177,11 +178,10 @@
     return [self getUUIDForField:FIELD_TYPE_UUID];
 }
 
-- (void)generateNewUUID {
-    NSUUID *unique = [[NSUUID alloc] init];
+- (void)setUuid:(NSUUID *)uuid {
     unsigned char bytes[16];
-
-    [unique getUUIDBytes:bytes];
+    [uuid getUUIDBytes:bytes];
+    
     NSData *d = [[NSData alloc] initWithBytes:bytes length:16];
 
     [self setFieldWithData:FIELD_TYPE_UUID data:d];
@@ -197,14 +197,14 @@
     [self setField:FIELD_TYPE_GROUP string:group.escapedPathString];
 }
 
-/////////////////////////////////////////////////////////////////////////////////////////////
+
 
 - (void)setFieldWithData:(FieldType)type data:(NSData *)data {
     Field *field = [self getFieldForType:type];
 
     if (!field) {
         field = [[Field alloc] initWithData:data type:type];
-        _fields[[NSNumber numberWithInt:type]] = field;
+        _fields[[NSNumber numberWithUnsignedInteger:type]] = field;
     }
     else {
         [field setDataWithData:data];
@@ -232,7 +232,7 @@
 
     if (!field) {
         field = [[Field alloc] initEmptyWithType:type];
-        _fields[[NSNumber numberWithInt:type]] = field;
+        _fields[[NSNumber numberWithUnsignedInteger:type]] = field;
     }
 
     [field setDataWithString:string];
@@ -279,7 +279,7 @@
 }
 
 - (Field *)getFieldForType:(FieldType)type {
-    NSNumber *groupType = [NSNumber numberWithInt:type];
+    NSNumber *groupType = [NSNumber numberWithUnsignedInteger:type];
 
     Field *field = _fields[groupType];
 

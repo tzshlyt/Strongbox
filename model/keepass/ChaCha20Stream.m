@@ -3,12 +3,13 @@
 //  Strongbox
 //
 //  Created by Mark on 30/10/2018.
-//  Copyright © 2018 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import "ChaCha20Stream.h"
 #import "sodium.h"
 #import <CommonCrypto/CommonCrypto.h>
+#import "SBLog.h"
 
 static const uint32_t kBlockSize = 64;
 static const uint32_t kIvSize = 12;
@@ -29,7 +30,7 @@ static const uint32_t kKeySize = 32;
         int sodium_initialization = sodium_init();
         
         if (sodium_initialization == -1) {
-            NSLog(@"Sodium Initialization Failed.");
+            slog(@"Sodium Initialization Failed.");
         }
     }
 }
@@ -39,7 +40,7 @@ static const uint32_t kKeySize = 32;
     
     if(SecRandomCopyBytes(kSecRandomDefault, kKeySize, newKey.mutableBytes))
     {
-        NSLog(@"Could not securely copy new Key bytes");
+        slog(@"Could not securely copy new Key bytes");
         return nil;
     }
     
@@ -61,14 +62,14 @@ static const uint32_t kKeySize = 32;
         
         self.bytesProcessed = 0;
         
-        //NSLog(@"ChaCha20 Generated IV: %@", [self.generatedIv base64EncodedStringWithOptions:kNilOptions]);
-        //NSLog(@"ChaCha20 Generated Key: %@", [self.generatedKey base64EncodedStringWithOptions:kNilOptions]);
+        
+        
     }
     
     return self;
 }
 
--(NSData *)xor:(NSData *)ct {
+-(NSData *)doTheXor:(NSData *)ct {
     uint32_t currentBlock = (uint32_t)self.bytesProcessed / kBlockSize;
     int offset = self.bytesProcessed % kBlockSize;
 
@@ -81,7 +82,7 @@ static const uint32_t kKeySize = 32;
     crypto_stream_chacha20_ietf_xor_ic(outData.mutableBytes, xorBlock.bytes, xorBlock.length, self.generatedIv.bytes, currentBlock, self.generatedKey.bytes);
     
     self.bytesProcessed += ct.length;
-    return [outData subdataWithRange:subRange];
+    return [outData subdataWithRange:subRange]; 
 }
 
 @end

@@ -3,17 +3,19 @@
 //  StrongBox
 //
 //  Created by Mark on 29/05/2017.
-//  Copyright © 2017 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import <UIKit/UIKit.h>
 #import "Model.h"
 
+NS_ASSUME_NONNULL_BEGIN
+
 @interface PasswordHistoryViewController : UITableViewController
 
 @property (nonatomic, retain) PasswordHistory *model;
 
-@property (nonatomic, copy) void (^ saveFunction)(PasswordHistory *changed, void (^onDone)(NSError *));
+@property (nonatomic, copy) void (^saveFunction)(PasswordHistory *changed);
 
 @property (weak, nonatomic) IBOutlet UISwitch *uiSwitchEnabled;
 @property (weak, nonatomic) IBOutlet UILabel *uiLabelPreviousPasswords;
@@ -29,3 +31,5 @@
 @property (nonatomic) BOOL readOnly;
 
 @end
+
+NS_ASSUME_NONNULL_END

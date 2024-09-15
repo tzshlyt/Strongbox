@@ -1,122 +1,121 @@
 //
 //  PickCredentialsTableViewController.m
-//  Strongbox Auto Fill
+//  Strongbox AutoFill
 //
 //  Created by Mark on 14/10/2018.
-//  Copyright © 2018 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import "PickCredentialsTableViewController.h"
 #import "NodeIconHelper.h"
-#import "Settings.h"
 #import "NSArray+Extensions.h"
 #import "Alerts.h"
 #import "Utils.h"
-#import "regdom.h"
-#import "BrowseItemCell.h"
 #import "ItemDetailsViewController.h"
-#import "DatabaseSearchAndSorter.h"
 #import "OTPToken+Generation.h"
+#import "ClipboardManager.h"
+#import "BrowseTableViewCellHelper.h"
+#import "AppPreferences.h"
+#import "SafeStorageProviderFactory.h"
+#import "NSString+Extensions.h"
+#import "AutoFillPreferencesViewController.h"
+#import "PreviewItemViewController.h"
+#import "ContextMenuHelper.h"
+#import "LargeTextViewController.h"
 
-static NSString* const kBrowseItemCell = @"BrowseItemCell";
+#ifndef IS_APP_EXTENSION
+#import "Strongbox-Swift.h"
+#else
+#import "Strongbox_Auto_Fill-Swift.h"
+#endif
+
+#import "SelectItemTableViewController.h"
+
+static NSString* const kGroupTitleMatches = @"title";
+static NSString* const kGroupUrlMatches = @"url";
+static NSString* const kGroupAllFieldsMatches = @"all-matches";
+static NSString* const kGroupNoMatchingItems = @"no-matches";
+static NSString* const kGroupPinned = @"pinned";
+static NSString* const kGroupServiceId = @"service-id";
+static NSString* const kGroupActions = @"actions";
+static NSString* const kGroupAllItems = @"all-items";
 
 @interface PickCredentialsTableViewController () <UISearchBarDelegate, UISearchResultsUpdating>
 
-@property (strong, nonatomic) NSArray<Node*> *searchResults;
-@property (strong, nonatomic) NSArray<Node*> *items;
+@property NSArray<NSString*> *groups;
+@property (strong, nonatomic) NSDictionary<NSString*, NSArray<Node*>*> *groupedResults;
+
 @property (strong, nonatomic) UISearchController *searchController;
-@property (weak, nonatomic) IBOutlet UIBarButtonItem *buttonAddCredential;
 @property NSTimer* timerRefreshOtp;
 
-@property (strong, nonatomic) UILongPressGestureRecognizer *longPressRecognizer;
-@property (nonatomic) NSInteger tapCount;
-@property (nonatomic) NSIndexPath *tappedIndexPath;
-@property (strong, nonatomic) NSTimer *tapTimer;
+@property BrowseTableViewCellHelper* cellHelper;
+@property BOOL doneFirstAppearanceTasks;
+@property (readonly) BOOL foundSearchResults;
+@property (readonly) BOOL showNoMatchesSection;
+@property (readonly) BOOL showAllItemsSection;
 
 @end
 
 @implementation PickCredentialsTableViewController
 
++ (instancetype)fromStoryboard {
+    UIStoryboard *mainStoryboard = [UIStoryboard storyboardWithName:@"SelectExistingAutoFillCredential" bundle:nil];
+
+    PickCredentialsTableViewController* vc = [mainStoryboard instantiateInitialViewController];
+    
+    return vc;
+}
+
 - (void)viewDidLoad {
     [super viewDidLoad];
     
-    if(Settings.sharedInstance.hideTips) {
+    if(AppPreferences.sharedInstance.hideTips) {
         self.navigationItem.prompt = nil;
     }
     
-    [self.tableView registerNib:[UINib nibWithNibName:kBrowseItemCell bundle:nil] forCellReuseIdentifier:kBrowseItemCell];
-    
-    self.longPressRecognizer = [[UILongPressGestureRecognizer alloc]
-                                initWithTarget:self
-                                action:@selector(handleLongPress:)];
-    self.longPressRecognizer.minimumPressDuration = 1;
-    self.longPressRecognizer.cancelsTouchesInView = YES;
-    
-    [self.tableView addGestureRecognizer:self.longPressRecognizer];
-    self.tableView.emptyDataSetSource = self;
-    self.tableView.emptyDataSetDelegate = self;
-    self.tableView.estimatedRowHeight = UITableViewAutomaticDimension;
-    self.tableView.rowHeight = UITableViewAutomaticDimension;
-    
-    self.tableView.tableFooterView = [UIView new];
-    
-    self.buttonAddCredential.enabled = [self canCreateNewCredential];
+    [self setupTableview];
     
     self.extendedLayoutIncludesOpaqueBars = YES;
     self.definesPresentationContext = YES;
     
     self.searchController = [[UISearchController alloc] initWithSearchResultsController:nil];
     self.searchController.searchResultsUpdater = self;
-    self.searchController.dimsBackgroundDuringPresentation = NO;
+    self.searchController.obscuresBackgroundDuringPresentation = NO;
     self.searchController.searchBar.delegate = self;
-    self.searchController.searchBar.scopeButtonTitles =
-        @[NSLocalizedString(@"pick_creds_vc_search_scope_title", @"Title"),
-          NSLocalizedString(@"pick_creds_vc_search_scope_username", @"Username"),
-          NSLocalizedString(@"pick_creds_vc_search_scope_password", @"Password"),
-          NSLocalizedString(@"pick_creds_vc_search_scope_url", @"URL"),
-          NSLocalizedString(@"pick_creds_vc_search_scope_all_fields", @"All Fields")];
+
+    self.navigationItem.searchController = self.searchController;
     
-    self.searchController.searchBar.selectedScopeButtonIndex = kSearchScopeAll;
+    self.navigationItem.hidesSearchBarWhenScrolling = NO;
+
+    self.searchController.searchBar.enablesReturnKeyAutomatically = NO; 
+        
     
-    if (@available(iOS 11.0, *)) {
-        self.navigationItem.searchController = self.searchController;
-        // We want the search bar visible all the time.
-        self.navigationItem.hidesSearchBarWhenScrolling = NO;
-    } else {
-        self.tableView.tableHeaderView = self.searchController.searchBar;
-        [self.searchController.searchBar sizeToFit];
-    }
     
-    [self loadItems];
+    self.groups = @[
+        kGroupNoMatchingItems,
+        kGroupUrlMatches,
+        kGroupTitleMatches,
+        kGroupAllFieldsMatches,
+        kGroupActions,
+        kGroupPinned,
+        kGroupServiceId,
+        kGroupAllItems
+    ];
+    
+    NSArray<Node*> *allItems = [self loadAllItems];
+    NSArray<Node*> *pinnedItems = [self loadPinnedItems];
+    
+    self.groupedResults = @{ kGroupAllItems : allItems,
+                             kGroupPinned : pinnedItems };
 }
 
-- (void)loadItems {
-    self.items = self.model.database.allRecords;
+- (void)setupTableview {
+    self.cellHelper = [[BrowseTableViewCellHelper alloc] initWithModel:self.model tableView:self.tableView];
     
-    // Filter KeePass1 Backup Group if so configured...
+    self.tableView.estimatedRowHeight = UITableViewAutomaticDimension;
+    self.tableView.rowHeight = UITableViewAutomaticDimension;
     
-    if(!self.model.metadata.showKeePass1BackupGroup) {
-        if (self.model.database.format == kKeePass1) {
-            Node* backupGroup = self.model.database.keePass1BackupNode;
-            
-            if(backupGroup) {
-                self.items = [self.model.database.allRecords filter:^BOOL(Node * _Nonnull obj) {
-                    return ![backupGroup contains:obj];
-                }];
-            }
-        }
-    }
-    
-    // Filter Recycle Bin...
-    
-    Node* recycleBin = self.model.database.recycleBinNode;
-    if(recycleBin) {
-        self.items = [self.items filter:^BOOL(Node * _Nonnull obj) {
-            return ![recycleBin contains:obj];
-        }];
-    }
-    
-    [self smartInitializeSearch];
+    self.tableView.tableFooterView = [UIView new];
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
@@ -128,7 +127,7 @@ static NSString* const kBrowseItemCell = @"BrowseItemCell";
     }
 }
 
-- (IBAction)updateOtpCodes:(id)sender {
+- (void)updateOtpCodes:(id)sender {
     [self.tableView reloadData];
 }
 
@@ -143,82 +142,96 @@ static NSString* const kBrowseItemCell = @"BrowseItemCell";
         self.timerRefreshOtp = nil;
     }
     
-    if(!self.model.metadata.hideTotpInBrowse) {
-        self.timerRefreshOtp = [NSTimer timerWithTimeInterval:1.0f target:self selector:@selector(updateOtpCodes:) userInfo:nil repeats:YES];
-        [[NSRunLoop mainRunLoop] addTimer:self.timerRefreshOtp forMode:NSRunLoopCommonModes];
-    }
+    self.timerRefreshOtp = [NSTimer timerWithTimeInterval:1.0f target:self selector:@selector(updateOtpCodes:) userInfo:nil repeats:YES];
+    [[NSRunLoop mainRunLoop] addTimer:self.timerRefreshOtp forMode:NSRunLoopCommonModes];
 }
 
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
 
-    dispatch_async(dispatch_get_main_queue(), ^(void) {
-        [self.searchController.searchBar becomeFirstResponder];
-    });
+    
+    
+    if (!self.doneFirstAppearanceTasks) {
+        self.doneFirstAppearanceTasks = YES;
+        
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25  * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ 
+            [self smartInitializeSearch];
+
+            [self.searchController.searchBar becomeFirstResponder];
+
+            
+            
+            if ( AppPreferences.sharedInstance.autoProceedOnSingleMatch && !self.twoFactorOnly ) {
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    [self proceedWithSingleMatch];
+                });
+            }
+        });
+    }
 }
 
-- (NSArray<Node *> *)getDataSource {
-    return (self.searchController.isActive ? self.searchResults : self.items);
+- (NSUInteger)getSearchResultsCount {
+    NSArray<Node*>* urls = self.groupedResults[kGroupUrlMatches];
+    NSArray<Node*>* titles = self.groupedResults[kGroupTitleMatches];
+    NSArray<Node*>* others = self.groupedResults[kGroupAllFieldsMatches];
+
+    NSUInteger urlCount = urls ? urls.count : 0;
+    NSUInteger titleCount = titles ? titles.count : 0;
+    NSUInteger otherCount = others ? others.count : 0;
+
+    return urlCount + titleCount + otherCount;
 }
 
 - (IBAction)onCancel:(id)sender {
-    [self.rootViewController cancel:nil];
-}
-
-- (void)updateSearchResultsForSearchController:(UISearchController *)searchController {
-    NSString *searchString = searchController.searchBar.text;
-    
-    [self filterContentForSearchText:searchString scope:(SearchScope)searchController.searchBar.selectedScopeButtonIndex];
-    [self.tableView reloadData];
-}
-
-- (void)filterContentForSearchText:(NSString *)searchText scope:(SearchScope)scope {
-    if(!searchText.length) {
-        self.searchResults = self.items;
-        return;
-    }
-    
-    self.searchResults = [self getMatchingItems:searchText scope:scope];
+    self.completion(YES, nil, nil, nil);
 }
 
 - (void)smartInitializeSearch {
-    NSArray<ASCredentialServiceIdentifier *> *serviceIdentifiers = [self.rootViewController getCredentialServiceIdentifiers];
+    ASCredentialServiceIdentifier *serviceId = self.serviceIdentifiers.firstObject;
     
-    ASCredentialServiceIdentifier *serviceId = [serviceIdentifiers firstObject];
     if(serviceId) {
         if(serviceId.type == ASCredentialServiceIdentifierTypeURL) {
-            NSURL* url = [NSURL URLWithString:serviceId.identifier];
+            NSURL* url = serviceId.identifier.urlExtendedParse;
             
-            //NSLog(@"URL: %@", url);
             
-            // Direct URL Match?
             
-            NSArray* items = [self getMatchingItems:url.absoluteString scope:kSearchScopeUrl];
-            if(items.count) {
-                [self.searchController.searchBar setText:url.absoluteString];
-                [self.searchController.searchBar setSelectedScopeButtonIndex:kSearchScopeUrl];
-                return;
+            
+            
+            if (url) {
+                NSArray* items = [self getMatchingItems:url.absoluteString scope:kSearchScopeUrl];
+                if(items.count) {
+                    [self.searchController.searchBar setText:url.absoluteString];
+                    return;
+                }
+                else {
+
+                }
+                
+                
+                
+                if ( url.host.length ) { 
+                    items = [self getMatchingItems:url.host scope:kSearchScopeUrl];
+                    if(items.count) {
+                        [self.searchController.searchBar setText:url.host];
+                        return;
+                    }
+                    else {
+
+                    }
+                    
+                    NSString* domain = getPublicDomain(url.host);
+                    [self smartInitializeSearchFromDomain:domain];
+                }
+                else {
+                    NSString* domain = getPublicDomain(url.absoluteString);
+                    [self smartInitializeSearchFromDomain:domain];
+                }
             }
             else {
-                NSLog(@"No matches for URL: %@", url.absoluteString);
-            }
-            
-            // Host URL Match?
-            
-            items = [self getMatchingItems:url.host scope:kSearchScopeUrl];
-            if(items.count) {
-                [self.searchController.searchBar setText:url.host];
-                [self.searchController.searchBar setSelectedScopeButtonIndex:kSearchScopeUrl];
-                return;
-            }
-            else {
-                NSLog(@"No matches for URL: %@", url.host);
-            }
 
-            
-            NSString* domain = getDomain(url.host);
-            [self smartInitializeSearchFromDomain:domain];
-
+                NSString* domain = getPublicDomain(serviceId.identifier);
+                [self smartInitializeSearchFromDomain:domain];
+            }
         }
         else if (serviceId.type == ASCredentialServiceIdentifierTypeDomain) {
             [self smartInitializeSearchFromDomain:serviceId.identifier];
@@ -227,120 +240,485 @@ static NSString* const kBrowseItemCell = @"BrowseItemCell";
 }
 
 - (void)smartInitializeSearchFromDomain:(NSString*)domain {
-    // Domain URL Match?
+    if(!domain.length) {
+        return;
+    }
+    
+    if ( [domain hasPrefix:@"www."] && domain.length > 4) {
+        domain = [domain substringFromIndex:4];
+    }
+    
+    
     
     NSArray* items = [self getMatchingItems:domain scope:kSearchScopeUrl];
     if(items.count) {
         [self.searchController.searchBar setText:domain];
-        [self.searchController.searchBar setSelectedScopeButtonIndex:kSearchScopeUrl];
+
         return;
     }
     else {
-        NSLog(@"No matches in URLs for Domain: %@", domain);
+        slog(@"No matches in URLs for Domain: %@", domain);
     }
     
-    // Broad Search across all fields for domain...
+    
     
     items = [self getMatchingItems:domain scope:kSearchScopeAll];
     if(items.count) {
         [self.searchController.searchBar setText:domain];
-        [self.searchController.searchBar setSelectedScopeButtonIndex:kSearchScopeUrl];
+
         return;
     }
     else {
-        NSLog(@"No matches across all fields for Domain: %@", domain);
+        slog(@"No matches across all fields for Domain: %@", domain);
     }
 
-    // Broadest general search (try grab the company/organisation name from the host)
+    
     
     NSString * searchTerm = getCompanyOrOrganisationNameFromDomain(domain);
     [self.searchController.searchBar setText:searchTerm];
+
+}
+
+NSString *getPublicDomain(NSString* url) {
+    if(url == nil) {
+        return @"";
+    }
+    
+    if(!url.length) {
+        return @"";
+    }
+    
+    return [BrowserAutoFillManager extractPSLDomainFromUrlWithUrl:url];
+}
+
+static NSString *getCompanyOrOrganisationNameFromDomain(NSString* domain) {
+    if(!domain.length) {
+        return domain;
+    }
+    
+    NSArray<NSString*> *parts = [domain componentsSeparatedByString:@"."];
+    
+    NSString *searchTerm = parts.count ? parts[0] : domain;
+    return searchTerm;
+}
+
+- (NSArray<Node*>*)loadAllItems {
+    NSArray<Node*>* entries = self.twoFactorOnly ? self.model.totpEntries : self.model.allSearchableNoneExpiredEntries;
+    
+    return [self.model filterAndSortForBrowse:entries.mutableCopy includeGroups:NO];
+}
+
+- (NSArray<Node*>*)loadPinnedItems {
+    if( !self.model.favourites.count || !AppPreferences.sharedInstance.autoFillShowFavourites || self.twoFactorOnly ) {
+        return @[];
+    }
+    
+    BrowseSortConfiguration* sortConfig = [self.model getDefaultSortConfiguration];
+    
+    return [self.model filterAndSortForBrowse:self.model.favourites.mutableCopy
+                        includeKeePass1Backup:NO
+                            includeRecycleBin:NO
+                               includeExpired:YES
+                                includeGroups:NO
+                              browseSortField:sortConfig.field
+                                   descending:sortConfig.descending
+                            foldersSeparately:sortConfig.foldersOnTop];
+}
+
+- (void)updateSearchResultsForSearchController:(UISearchController *)searchController {
+    NSString *searchString = searchController.searchBar.text;
+    
+    NSMutableDictionary* updated = self.groupedResults.mutableCopy;
+
+    if(!searchString.length) {
+        updated[kGroupUrlMatches] = @[];
+        updated[kGroupTitleMatches] =  @[];
+        updated[kGroupAllFieldsMatches] = @[];
+    }
+    else {
+        NSArray<Node*> *urlMatches = [self getMatchingItems:searchString scope:kSearchScopeUrl];
+        NSArray<Node*> *titleMatches = [self getMatchingItems:searchString scope:kSearchScopeTitle];
+        NSArray<Node*> *otherFieldMatches = [self getMatchingItems:searchString scope:kSearchScopeAll];
+        
+        updated[kGroupUrlMatches] = urlMatches;
+        NSSet<NSUUID*>* urlMatchSet = [urlMatches map:^id _Nonnull(Node * _Nonnull obj, NSUInteger idx) {
+            return obj.uuid;
+        }].set;
+        
+        titleMatches = [titleMatches filter:^BOOL(Node * _Nonnull obj) {
+            return ![urlMatchSet containsObject:obj.uuid];
+        }];
+        
+        updated[kGroupTitleMatches] = titleMatches;
+        
+        NSSet<NSUUID*>* titleMatchSet = [titleMatches map:^id _Nonnull(Node * _Nonnull obj, NSUInteger idx) {
+            return obj.uuid;
+        }].set;
+
+        otherFieldMatches = [otherFieldMatches filter:^BOOL(Node * _Nonnull obj) {
+            return ![urlMatchSet containsObject:obj.uuid] && ![titleMatchSet containsObject:obj.uuid];
+        }];
+        
+        updated[kGroupAllFieldsMatches] = otherFieldMatches;
+    }
+    
+    self.groupedResults = updated;
+    
+    [self.tableView reloadData];
 }
 
 - (NSArray<Node*>*)getMatchingItems:(NSString*)searchText scope:(SearchScope)scope {
-    DatabaseSearchAndSorter* searcher = [[DatabaseSearchAndSorter alloc] initWithDatabase:self.model.database metadata:self.model.metadata];
+    NSArray<Node*>* ret = [self.model search:searchText scope:scope includeGroups:NO];
     
-    return [searcher search:searchText
-                      scope:scope
-                dereference:self.model.metadata.searchDereferencedFields
-      includeKeePass1Backup:self.model.metadata.showKeePass1BackupGroup
-          includeRecycleBin:self.model.metadata.showRecycleBinInSearchResults
-             includeExpired:self.model.metadata.showExpiredInSearch];
+    if ( self.twoFactorOnly ) {
+        return [ret filter:^BOOL(Node * _Nonnull obj) {
+            return obj.fields.otpToken != nil;
+        }];
+    }
+    else {
+        return ret;
+    }
 }
 
-- (void)searchBar:(UISearchBar *)searchBar selectedScopeButtonIndexDidChange:(NSInteger)selectedScope {
-    [self updateSearchResultsForSearchController:self.searchController];
+
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
+    return self.groups.count;
 }
 
-- (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
-    return UITableViewAutomaticDimension;  // Required for iOS 9 and 10
+- (BOOL)foundSearchResults {
+    return [self getSearchResultsCount] != 0;
 }
 
-- (CGFloat)tableView:(UITableView *)tableView estimatedHeightForRowAtIndexPath:(NSIndexPath *)indexPath {
-    
-    /* Return an estimated height or calculate
-     * estimated height dynamically on information
-     * that makes sense in your case.
-     */
-    return 60.0f; // Required for iOS 9 and 10
+- (BOOL)showNoMatchesSection {
+    return !self.foundSearchResults && self.searchController.searchBar.text.length != 0;
+}
+
+- (BOOL)showAllItemsSection {
+    return !self.foundSearchResults || self.searchController.searchBar.text.length == 0;
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return [self getDataSource].count;
-}
-
-- (BOOL)isPinned:(Node*)item { // TODO: We need this to be part of the model somehow...
-    NSMutableSet<NSString*>* favs = [NSMutableSet setWithArray:self.model.metadata.favourites];
-    NSString* sid = [item getSerializationId:self.model.database.format != kPasswordSafe];
-    return [favs containsObject:sid];
+    NSString* group = self.groups[section];
+    
+    if ( [group isEqualToString:kGroupServiceId] ) {
+        return 1;
+    }
+    else if ( [group isEqualToString:kGroupActions] ) {
+        return 2;
+    }
+    else if ( [group isEqualToString:kGroupNoMatchingItems] ) {
+        return self.showNoMatchesSection ? 1 : 0;
+    }
+    else if ( [group isEqualToString:kGroupAllItems] ) {
+        NSArray<Node*> *items = self.groupedResults[kGroupAllItems];
+        return self.showAllItemsSection ? (items ? items.count : 0) : 0;
+    }
+    else {
+        NSArray<Node*> *items = self.groupedResults[group];
+        return items ? items.count : 0;
+    }
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    Node *node = [self getDataSource][indexPath.row];
-    BrowseItemCell* cell = [self.tableView dequeueReusableCellWithIdentifier:kBrowseItemCell forIndexPath:indexPath];
+    NSString* group = self.groups[indexPath.section];
     
-    NSString* title = self.model.metadata.viewDereferencedFields ? [self dereference:node.title node:node] : node.title;
-    UIImage* icon = [NodeIconHelper getIconForNode:node database:self.model.database];
-    NSString *groupLocation = self.searchController.isActive ? [self getGroupPathDisplayString:node] : @"";
-    
-    if(node.isGroup) {
-        BOOL italic = (self.model.database.recycleBinEnabled && node == self.model.database.recycleBinNode);
+    if ( [group isEqualToString:kGroupServiceId] ) {
+        UITableViewCell* cell = [self.tableView dequeueReusableCellWithIdentifier:@"PickCredentialGenericCell" forIndexPath:indexPath];
+      
+
+        cell.textLabel.text = @"";
+        cell.detailTextLabel.text = self.serviceIdentifiers.firstObject ? self.serviceIdentifiers.firstObject.identifier : NSLocalizedString(@"generic_none", @"None");
         
-        NSString* childCount = self.model.metadata.showChildCountOnFolderInBrowse ? [NSString stringWithFormat:@"(%lu)", (unsigned long)node.children.count] : @"";
+        cell.imageView.image = nil;
         
-        [cell setGroup:title
-                  icon:icon
-            childCount:childCount
-                italic:italic
-         groupLocation:groupLocation
-                pinned:self.model.metadata.showFlagsInBrowse ? [self isPinned:node] : NO];
+        return cell;
+    }
+    else if ( [group isEqualToString:kGroupActions] ) {
+        UITableViewCell* cell = [self.tableView dequeueReusableCellWithIdentifier:@"PickCredentialGenericBasicCell" forIndexPath:indexPath];
+        
+        if ( indexPath.row == 0 ) {
+            cell.textLabel.text = NSLocalizedString(@"pick_creds_vc_create_new_button_title", @"Create New Entry...");
+            cell.imageView.image = [UIImage systemImageNamed:@"plus"];
+            cell.imageView.tintColor = [self canCreateNewCredential] ? nil : UIColor.secondaryLabelColor;
+            
+            cell.textLabel.textColor = [self canCreateNewCredential] ? UIColor.systemBlueColor : UIColor.secondaryLabelColor;
+
+            cell.userInteractionEnabled = [self canCreateNewCredential];
+        }
+        else {
+            cell.textLabel.text = NSLocalizedString(@"generic_settings", @"Settings");
+            cell.imageView.image = [UIImage systemImageNamed:@"gear"];
+            
+            cell.textLabel.textColor = UIColor.systemBlueColor;
+            cell.userInteractionEnabled = YES;
+        }
+        
+        return cell;
+    }
+    else if ( [group isEqualToString:kGroupNoMatchingItems] ) {
+        UITableViewCell* cell = [self.tableView dequeueReusableCellWithIdentifier:@"PickCredentialGenericBasicCell" forIndexPath:indexPath];
+        
+        cell.textLabel.text = NSLocalizedString(@"pick_creds_vc_empty_search_dataset_title", @"No Matching Records");
+        cell.imageView.image = [UIImage imageNamed:@"search"];
+        cell.textLabel.textColor = UIColor.labelColor;
+        
+        return cell;
     }
     else {
-        DatabaseSearchAndSorter* searcher = [[DatabaseSearchAndSorter alloc] initWithDatabase:self.model.database metadata:self.model.metadata];
-        
-        NSString* subtitle = [searcher getBrowseItemSubtitle:node];
-        
-        [cell setRecord:title
-               subtitle:subtitle
-                   icon:icon
-          groupLocation:groupLocation
-                 pinned:self.model.metadata.showFlagsInBrowse ? [self isPinned:node] : NO
-         hasAttachments:self.model.metadata.showFlagsInBrowse ? node.fields.attachments.count : NO
-                expired:node.expired
-               otpToken:node.fields.otpToken];
+        NSArray<Node*> *items = self.groupedResults[group];
+        Node* item = (items && items.count > indexPath.row) ? items[indexPath.row] : nil;
+
+        if ( item ) {
+            return [self.cellHelper getBrowseCellForNode:item indexPath:indexPath showLargeTotpCell:NO showGroupLocation:self.searchController.isActive];
+        }
+        else { 
+            return [self.tableView dequeueReusableCellWithIdentifier:@"PickCredentialGenericCell" forIndexPath:indexPath];
+        }
     }
-    
-    return cell;
 }
 
-- (NSString *)getGroupPathDisplayString:(Node *)vm {
-    NSArray<NSString*> *hierarchy = [vm getTitleHierarchy];
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [self.tableView deselectRowAtIndexPath:indexPath animated:YES];
     
-    NSString *path = [[hierarchy subarrayWithRange:NSMakeRange(0, hierarchy.count - 1)] componentsJoinedByString:@"/"];
+    NSString* group = self.groups[indexPath.section];
     
-    return hierarchy.count == 1 ?
-        NSLocalizedString(@"pick_creds_vc_group_path_display_string_root", @"(in /)") :
-        [NSString stringWithFormat:NSLocalizedString(@"pick_creds_vc_group_path_display_string_fmt", @"(in /%@)"), path];
+    if ( [group isEqualToString:kGroupServiceId] ) {
+        if ( self.serviceIdentifiers.firstObject ) {
+            [ClipboardManager.sharedInstance copyStringWithNoExpiration:self.serviceIdentifiers.firstObject.identifier];
+        }
+    }
+    else if ( [group isEqualToString:kGroupActions] ) {
+        if ( indexPath.row == 0 ) {
+            [self onAddCredential:nil];
+        }
+        else {
+            [self onPreferences:nil];
+        }
+    }
+    else if ( [group isEqualToString:kGroupNoMatchingItems] ) {
+        
+    }
+    else {
+        NSArray<Node*> *items = self.groupedResults[group];
+        Node* item = (items && items.count > indexPath.row) ? items[indexPath.row] : nil;
+
+        if(item) {
+            [self proceedWithItem:item];
+        }
+        else {
+            slog(@"WARN: DidSelectRow with no Record?!");
+        }
+    }
+}
+
+- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
+    NSString* group = self.groups[section];
+
+    if ( [group isEqualToString:kGroupTitleMatches] ) {
+        return NSLocalizedString(@"autofill_search_title_matches_section_header", @"Title Matches");
+    }
+    else if ( [group isEqualToString:kGroupUrlMatches] ) {
+        return NSLocalizedString(@"autofill_search_url_matches_section_header", @"URL Matches");
+    }
+    else if ( [group isEqualToString:kGroupAllFieldsMatches] ) {
+        return NSLocalizedString(@"autofill_search_other_matches_section_header", @"Other Matches");
+    }
+    else if ( [group isEqualToString:kGroupPinned] ) {
+        return NSLocalizedString(@"browse_vc_section_title_pinned", @"Pinned");
+    }
+    else if ( [group isEqualToString:kGroupServiceId] ) {
+        return NSLocalizedString(@"autofill_search_title_service_id_section_header", @"Service ID");
+    }
+    else if ( [group isEqualToString:kGroupActions] ) {
+        return NSLocalizedString(@"generic_actions", @"Actions");
+    }
+    else if ( [group isEqualToString:kGroupAllItems] ) {
+        return self.twoFactorOnly ? NSLocalizedString(@"quick_view_title_totp_entries_title", @"2FA Codes") : NSLocalizedString(@"quick_view_title_all_entries_title", @"All Entries");
+    }
+    else if ( [group isEqualToString:kGroupNoMatchingItems] ) {
+        return NSLocalizedString(@"quick_view_title_no_matches_title", @"Results");
+    }
+    
+    return self.groups[section];
+}
+
+- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
+    NSString* group = self.groups[section];
+
+    if ( [group isEqualToString:kGroupServiceId] ) {
+        return self.serviceIdentifiers.count > 0 ? NSLocalizedString(@"autofill_search_service_id_section_footer", @"") : nil;
+    }
+    
+    return nil;
+}
+
+- (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
+    NSString* group = self.groups[section];
+    
+    if ( [group isEqualToString:kGroupActions] ) {
+        return (self.twoFactorOnly || self.alsoRequestFieldSelection) ? 0.1f : UITableViewAutomaticDimension;
+    }
+
+    if ( [group isEqualToString:kGroupServiceId] ) {
+        return self.serviceIdentifiers.count > 0 ? UITableViewAutomaticDimension : 0.1f;
+    }
+    
+    if ( [group isEqualToString:kGroupNoMatchingItems] ) {
+        return self.showNoMatchesSection ? UITableViewAutomaticDimension : 0.1f;
+    }
+    
+    if ( [group isEqualToString:kGroupAllItems] ) {
+        return self.showAllItemsSection ? UITableViewAutomaticDimension : 0.1f;
+    }
+    
+    if ( ![group isEqualToString:kGroupServiceId] && ![group isEqualToString:kGroupActions] ) {
+        NSArray<Node*> *items = self.groupedResults[group];
+        if ( items.count == 0) {
+            return 0.1f;
+        }
+    }
+
+    
+    return UITableViewAutomaticDimension;
+}
+
+- (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
+    NSString* group = self.groups[indexPath.section];
+
+    if ( [group isEqualToString:kGroupActions] ) {
+        if ( indexPath.row == 0 ) {
+            if ( self.model.isReadOnly || self.twoFactorOnly || self.alsoRequestFieldSelection ) {
+                return 0.0f;
+            }
+        }
+        else {
+            if ( self.twoFactorOnly || self.alsoRequestFieldSelection ) {
+                return 0.0f;
+            }
+        }
+    }
+
+    if ( [group isEqualToString:kGroupServiceId] ) {
+        if ( self.serviceIdentifiers.count == 0 ) {
+            return 0.0f;
+        }
+    }
+
+
+
+
+    
+    return [super tableView:tableView heightForRowAtIndexPath:indexPath];
+}
+
+- (CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section {
+    NSString* group = self.groups[section];
+
+
+
+
+
+        if ( [group isEqualToString:kGroupServiceId] ) {
+            return self.serviceIdentifiers.count > 0 ? UITableViewAutomaticDimension : 0.1f;
+        }
+
+        return 0.1f;
+
+}
+
+- (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
+    NSString* group = self.groups[section];
+
+    if ( [group isEqualToString:kGroupNoMatchingItems] ) {
+        return self.showNoMatchesSection ? [super tableView:tableView viewForHeaderInSection:section] : [self sectionFiller];
+    }
+
+    if ( [group isEqualToString:kGroupAllItems] ) {
+        return self.showAllItemsSection ? [super tableView:tableView viewForHeaderInSection:section] : [self sectionFiller];
+    }
+
+    if ( [group isEqualToString:kGroupServiceId] ) {
+        return self.serviceIdentifiers.count > 0 ? [super tableView:tableView viewForHeaderInSection:section] : [self sectionFiller];
+    }
+
+    if ( [group isEqualToString:kGroupActions] ) {
+        return (self.twoFactorOnly || self.alsoRequestFieldSelection) ? [self sectionFiller] : [super tableView:tableView viewForHeaderInSection:section];
+    }
+    
+    if ( ![group isEqualToString:kGroupServiceId]  && ![group isEqualToString:kGroupActions] ) {
+        NSArray<Node*> *items = self.groupedResults[group];
+        if ( items.count == 0) {
+            return [self sectionFiller];
+        }
+    }
+
+    return [super tableView:tableView viewForHeaderInSection:section];
+}
+
+- (UIView *)sectionFiller {
+    static UILabel *emptyLabel = nil;
+    if (!emptyLabel) {
+        emptyLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+        emptyLabel.backgroundColor = [UIColor clearColor];
+    }
+    return emptyLabel;
+}
+
+- (Node*)getTopMatch {
+    NSArray<Node*>* urls = self.groupedResults[kGroupUrlMatches];
+    NSArray<Node*>* titles = self.groupedResults[kGroupTitleMatches];
+    NSArray<Node*>* others = self.groupedResults[kGroupAllFieldsMatches];
+
+    NSUInteger urlCount = urls ? urls.count : 0;
+    NSUInteger titleCount = titles ? titles.count : 0;
+    NSUInteger otherCount = others ? others.count : 0;
+
+    if ( ( urlCount + titleCount + otherCount ) > 0 ) {
+        if ( urlCount ) {
+            return urls.firstObject;
+        }
+        else if ( titleCount ) {
+            return titles.firstObject;
+        }
+        
+        return others.firstObject;
+    }
+    
+    return nil;
+}
+
+- (void)proceedWithSingleMatch {
+    if ( [self getSearchResultsCount] == 1 ) {
+        [self proceedWithTopMatch];
+    }
+}
+
+- (void)proceedWithTopMatch {
+    Node* item = [self getTopMatch];
+    
+    if ( item ) {
+        [self proceedWithItem:item];
+    }
+}
+
+- (void)proceedWithItem:(Node*)item {
+    if ( self.alsoRequestFieldSelection ) {
+        [self promptForFieldSelection:item];
+    }
+    else {
+        [self.presentingViewController dismissViewControllerAnimated:YES completion:^{
+            self.completion(NO, item, nil, nil);
+        }];
+    }
+}
+
+
+
+- (void)searchBarSearchButtonClicked:(UISearchBar *)searchBar {
+    if ( self.foundSearchResults ) {
+        [self proceedWithTopMatch];
+    }
 }
 
 - (NSString*)dereference:(NSString*)text node:(Node*)node {
@@ -348,254 +726,453 @@ static NSString* const kBrowseItemCell = @"BrowseItemCell";
 }
 
 - (IBAction)onAddCredential:(id)sender {
-    [self segueToCreateNew];
+    if ( [self canCreateNewCredential] ) {
+        [self performSegueWithIdentifier:@"segueToAddNew" sender:nil];
+    }
 }
 
-- (void)segueToCreateNew {
-    [self performSegueWithIdentifier:@"segueToAddNew" sender:nil];
+- (IBAction)onPreferences:(id)sender {
+    [self performSegueWithIdentifier:@"segueToPreferences" sender:self.model];
 }
 
-- (void)prepareForSegue:(UIStoryboardSegue *)segue sender:(id)sender {
+- (void)prepareForSegue:(UIStoryboardSegue *)segue sender:(id)sender {  
+    if ([segue.identifier isEqualToString:@"segueToAddNew"]) {
+        ItemDetailsViewController* vc = (ItemDetailsViewController*)segue.destinationViewController;
+        [self addNewEntry:vc];
+    }
+    else if ([segue.identifier isEqualToString:@"segueToPreferences"]) {
+        
+        
+        
+        slog(@"segueToPreferences");
+        [self.searchController.searchBar resignFirstResponder];
+        
+        UINavigationController* nav = segue.destinationViewController;
+        AutoFillPreferencesViewController* vc = (AutoFillPreferencesViewController*)nav.topViewController;
+        vc.viewModel = sender;
+    }
+    else {
+        slog(@"Unknown SEGUE!");
+    }
+}
+
+- (void)addNewEntry:(ItemDetailsViewController*)vc {
     NSString* suggestedTitle = nil;
     NSString* suggestedUrl = nil;
+    NSString* suggestedNotes = nil;
     
-    NSArray<ASCredentialServiceIdentifier *> *serviceIdentifiers = [self.rootViewController getCredentialServiceIdentifiers];
-    ASCredentialServiceIdentifier *serviceId = [serviceIdentifiers firstObject];
+    if (AppPreferences.sharedInstance.storeAutoFillServiceIdentifiersInNotes) {
+        suggestedNotes = [[self.serviceIdentifiers map:^id _Nonnull(ASCredentialServiceIdentifier * _Nonnull obj, NSUInteger idx) {
+            return obj.identifier;
+        }] componentsJoinedByString:@"\n\n"];
+    }
+    
+    ASCredentialServiceIdentifier *serviceId = [self.serviceIdentifiers firstObject];
     if(serviceId) {
         if(serviceId.type == ASCredentialServiceIdentifierTypeURL) {
-            NSURL* url = [NSURL URLWithString:serviceId.identifier];
+            NSURL* url = serviceId.identifier.urlExtendedParse;
             if(url && url.host.length) {
-                NSString* foo = getCompanyOrOrganisationNameFromDomain(url.host);
+                NSString* bar = getPublicDomain(url.host);
+                NSString* foo = getCompanyOrOrganisationNameFromDomain(bar);
                 suggestedTitle = foo.length ? [foo capitalizedString] : foo;
-                suggestedUrl = [[url.scheme stringByAppendingString:@"://"] stringByAppendingString:url.host];
-            }
-            else {
-                suggestedUrl = serviceId.identifier;
+                
+                if (AppPreferences.sharedInstance.useFullUrlAsURLSuggestion) {
+                    suggestedUrl = url.absoluteString;
+                }
+                else {
+                    suggestedUrl = [[url.scheme stringByAppendingString:@":
+                }
             }
         }
         else if (serviceId.type == ASCredentialServiceIdentifierTypeDomain) {
-            NSString* foo = getCompanyOrOrganisationNameFromDomain(serviceId.identifier);
+            NSString* bar = getPublicDomain(serviceId.identifier);
+            NSString* foo = getCompanyOrOrganisationNameFromDomain(bar);
             suggestedTitle = foo.length ? [foo capitalizedString] : foo;
             suggestedUrl = serviceId.identifier;
         }
     }
 
-    //UINavigationController* nav = segue.destinationViewController;
-    ItemDetailsViewController* vc = (ItemDetailsViewController*)segue.destinationViewController;
-    
     vc.createNewItem = YES;
-    vc.item = nil;
-    vc.parentGroup = self.model.database.rootGroup;
-    vc.readOnly = NO;
+    vc.itemId = nil;
+    vc.parentGroupId = self.model.database.effectiveRootGroup.uuid;
+    vc.forcedReadOnly = NO;
     vc.databaseModel = self.model;
-    vc.autoFillRootViewController = self.rootViewController;
     vc.autoFillSuggestedUrl = suggestedUrl;
     vc.autoFillSuggestedTitle = suggestedTitle;
+    vc.autoFillSuggestedNotes = suggestedNotes;
+        
+    vc.onAutoFillNewItemAdded = ^(NSString * _Nonnull username, NSString * _Nonnull password) {
+        [self notifyUserToSwitchToAppAfterUpdate:username password:password];
+    };
+}
+
+- (void)notifyUserToSwitchToAppAfterUpdate:(NSString*)username password:(NSString*)password {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (self.model.metadata.storageProvider != kLocalDevice && !AppPreferences.sharedInstance.dontNotifyToSwitchToMainAppForSync) {
+            NSString* title = NSLocalizedString(@"autofill_add_entry_sync_required_title", @"Sync Required");
+            NSString* locMessage = NSLocalizedString(@"autofill_add_entry_sync_required_message_fmt",@"You have added a new entry and this change has been saved locally.\n\nDon't forget to switch to the main Strongbox app to fully sync these changes to %@.");
+            NSString* gotIt = NSLocalizedString(@"autofill_add_entry_sync_required_option_got_it",@"Got it!");
+            NSString* gotItDontTellMeAgain = NSLocalizedString(@"autofill_add_entry_sync_required_option_dont_tell_again",@"Don't tell me again");
+            
+            NSString* storageName = [SafeStorageProviderFactory getStorageDisplayName:self.model.metadata];
+            NSString* message = [NSString stringWithFormat:locMessage, storageName];
+            
+            [Alerts twoOptions:self title:title message:message defaultButtonText:gotIt secondButtonText:gotItDontTellMeAgain action:^(BOOL response) {
+                if (response == NO) {
+                    AppPreferences.sharedInstance.dontNotifyToSwitchToMainAppForSync = YES;
+                }
+                
+                self.completion(NO, nil, username, password);
+            }];
+        }
+        else {
+            self.completion(NO, nil, username, password);
+        }
+    });
 }
 
 - (BOOL)canCreateNewCredential {
-    return [self.rootViewController liveAutoFillIsPossibleWithSafe:self.model.metadata] && !self.model.isReadOnly;
+    return !self.model.isReadOnly && !self.disableCreateNew;
 }
 
-- (void)emptyDataSet:(UIScrollView *)scrollView didTapButton:(UIButton *)button {
-    if([self canCreateNewCredential]) {
-        [self segueToCreateNew];
+
+
+- (UIContextMenuConfiguration *)tableView:(UITableView *)tableView contextMenuConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath point:(CGPoint)point {
+    if ( !AppPreferences.sharedInstance.autoFillLongTapPreview ) {
+        return nil;
     }
-    else {
-        [Alerts info:self
-               title:NSLocalizedString(@"pick_creds_vc_cannot_create_new_unsupported_storage_type_title", @"Unsupported Storage")
-             message:NSLocalizedString(@"pick_creds_vc_cannot_create_new_unsupported_storage_type_message", @"This database is stored on a Storage Provider that does not support Live editing in App Extensions. Cannot Create New Record.")];
+    
+    NSString* group = self.groups[indexPath.section];
+    if ( [group isEqualToString:kGroupServiceId] || [group isEqualToString:kGroupActions] || [group isEqualToString:kGroupNoMatchingItems] ) {
+        return nil;
     }
+    NSArray<Node*> *items = self.groupedResults[group];
+    Node* item = (items && items.count > indexPath.row) ? items[indexPath.row] : nil;
+    if (!item) {
+        return nil;
+    }
+
+    __weak PickCredentialsTableViewController* weakSelf = self;
+    
+    return [UIContextMenuConfiguration configurationWithIdentifier:indexPath
+                                                   previewProvider:^UIViewController * _Nullable{ return item.isGroup ? nil : [PreviewItemViewController forItem:item andModel:self.model];   }
+                                                    actionProvider:^UIMenu * _Nullable(NSArray<UIMenuElement *> * _Nonnull suggestedActions) {
+        return [UIMenu menuWithTitle:@""
+                               image:nil
+                          identifier:nil
+                             options:kNilOptions
+                            children:@[
+                                [weakSelf getContextualMenuNonMutators:indexPath item:item],
+                                [weakSelf getContextualMenuCopyToClipboard:indexPath item:item],
+                                [weakSelf getContextualMenuCopyFieldToClipboard:indexPath item:item],
+
+                            ]];
+    }];
 }
 
-- (NSAttributedString *)buttonTitleForEmptyDataSet:(UIScrollView *)scrollView forState:(UIControlState)state {
-    NSDictionary *attributes = @{
-                                 NSFontAttributeName: [UIFont systemFontOfSize:16.0f],
-                                 NSForegroundColorAttributeName: [UIColor blueColor]
-                                 };
+- (UIMenu*)getContextualMenuCopyToClipboard:(NSIndexPath*)indexPath item:(Node*)item {
+    NSMutableArray<UIMenuElement*>* ma = [NSMutableArray array];
     
-    return [[NSAttributedString alloc] initWithString:NSLocalizedString(@"pick_creds_vc_create_new_button_title", @"Create New Record...")
-                                           attributes:attributes];
+    
+    
+    if ( !item.isGroup && item.fields.username.length ) [ma addObject:[self getContextualMenuCopyUsernameAction:indexPath item:item]];
+
+    
+
+    if ( !item.isGroup && item.fields.password.length ) [ma addObject:[self getContextualMenuCopyPasswordAction:indexPath item:item]];
+
+    
+
+    if ( !item.isGroup && item.fields.otpToken ) [ma addObject:[self getContextualMenuCopyTotpAction:indexPath item:item]];
+
+    return [UIMenu menuWithTitle:@""
+                           image:nil
+                      identifier:nil
+                         options:UIMenuOptionsDisplayInline
+                        children:ma];
 }
 
-- (NSAttributedString *)titleForEmptyDataSet:(UIScrollView *)scrollView
-{
-    NSString *text = self.searchController.isActive ?
-        NSLocalizedString(@"pick_creds_vc_empty_search_dataset_title", @"No Matching Records") :
-        NSLocalizedString(@"pick_creds_vc_empty_dataset_title", @"Empty Database");
+- (UIAction*)getContextualMenuCopyUsernameAction:(NSIndexPath*)indexPath item:(Node*)item  {
+    __weak PickCredentialsTableViewController* weakSelf = self;
     
-    NSDictionary *attributes = @{NSFontAttributeName: [UIFont boldSystemFontOfSize:18.0f],
-                                 NSForegroundColorAttributeName: [UIColor darkGrayColor]};
-    
-    return [[NSAttributedString alloc] initWithString:text attributes:attributes];
+    return [ContextMenuHelper getItem:NSLocalizedString(@"browse_prefs_tap_action_copy_username", @"Copy Username")
+                           systemImage:@"doc.on.doc"
+                               handler:^(__kindof UIAction * _Nonnull action) {
+        [weakSelf copyUsername:item];
+    }];
 }
 
-- (NSAttributedString *)descriptionForEmptyDataSet:(UIScrollView *)scrollView
-{
-    NSString *text = self.searchController.isActive ?
-        NSLocalizedString(@"pick_creds_vc_empty_search_dataset_subtitle", @"Could not find any matching records") :
-        NSLocalizedString(@"pick_creds_vc_empty_dataset_subtitle", @"It appears your database is empty");
+- (UIAction*)getContextualMenuCopyPasswordAction:(NSIndexPath*)indexPath item:(Node*)item  {
+    __weak PickCredentialsTableViewController* weakSelf = self;
     
-    NSMutableParagraphStyle *paragraph = [NSMutableParagraphStyle new];
-    paragraph.lineBreakMode = NSLineBreakByWordWrapping;
-    paragraph.alignment = NSTextAlignmentCenter;
-    
-    NSDictionary *attributes = @{NSFontAttributeName: [UIFont systemFontOfSize:14.0f],
-                                 NSForegroundColorAttributeName: [UIColor lightGrayColor],
-                                 NSParagraphStyleAttributeName: paragraph};
-    
-    return [[NSAttributedString alloc] initWithString:text attributes:attributes];
+    return [ContextMenuHelper getItem:NSLocalizedString(@"browse_prefs_tap_action_copy_copy_password", @"Copy Password")
+                           systemImage:@"doc.on.doc"
+                               handler:^(__kindof UIAction * _Nonnull action) {
+        [weakSelf copyPassword:item];
+    }];
 }
 
-NSString *getDomain(NSString* host) {
-    if(host == nil) {
-        return @"";
-    }
+- (UIAction*)getContextualMenuCopyTotpAction:(NSIndexPath*)indexPath item:(Node*)item  {
+    __weak PickCredentialsTableViewController* weakSelf = self;
     
-    if(!host.length) {
-        return @"";
-    }
-    
-    const char *cStringUrl = [host UTF8String];
-    if(!cStringUrl || strlen(cStringUrl) == 0) {
-        return @"";
-    }
-    
-    void *tree = loadTldTree();
-    const char *result = getRegisteredDomainDrop(cStringUrl, tree, 1);
-    
-    if(result == NULL) {
-        return @"";
-    }
-    
-    NSString *domain = [NSString stringWithCString:result encoding:NSUTF8StringEncoding];
-    
-    NSLog(@"Calculated Domain: %@", domain);
-    
-    return domain;
+    return [ContextMenuHelper getItem:NSLocalizedString(@"browse_prefs_tap_action_copy_copy_totp", @"Copy TOTP")
+                           systemImage:@"doc.on.doc"
+                               handler:^(__kindof UIAction * _Nonnull action) {
+        [weakSelf copyTotp:item];
+    }];
 }
 
-NSString *getCompanyOrOrganisationNameFromDomain(NSString* domain) {
-    if(!domain.length) {
-        return domain;
-    }
-    
-    NSArray<NSString*> *parts = [domain componentsSeparatedByString:@"."];
-    
-    NSLog(@"%@", parts);
-    
-    NSString *searchTerm =  parts.count ? parts[0] : domain;
-    return searchTerm;
-}
-
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// Long Press
-
-- (void)handleLongPress:(UILongPressGestureRecognizer *)sender {
-    if (sender.state != UIGestureRecognizerStateBegan) {
-        return;
-    }
-    
-    CGPoint tapLocation = [self.longPressRecognizer locationInView:self.tableView];
-    NSIndexPath *indexPath = [self.tableView indexPathForRowAtPoint:tapLocation];
-    
-    if (!indexPath || indexPath.row >= [self getDataSource].count) {
-        NSLog(@"Not on a cell");
-        return;
-    }
-    
-    Node *item = [self getDataSource][indexPath.row];
-    
-    if (item.isGroup) {
-        NSLog(@"Item is group, cannot Fast PW Copy...");
-        return;
-    }
-    
-    NSLog(@"Fast Password Copy on %@", item.title);
-
-    UIPasteboard *pasteboard = [UIPasteboard generalPasteboard];
-    
-    BOOL copyTotp = (item.fields.password.length == 0 && item.fields.otpToken);
-    pasteboard.string = copyTotp ? item.fields.otpToken.password : [self dereference:item.fields.password node:item];
-}
-
-- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    if(self.tapCount == 1 && self.tapTimer != nil && [self.tappedIndexPath isEqual:indexPath]){
-        [self.tapTimer invalidate];
+- (UIMenu*)getContextualMenuNonMutators:(NSIndexPath*)indexPath item:(Node*)item  {
+    NSMutableArray<UIAction*>* ma = [NSMutableArray array];
         
-        self.tapTimer = nil;
-        self.tapCount = 0;
-        self.tappedIndexPath = nil;
+    if (item.fields.password.length) [ma addObject:[self getContextualMenuShowLargePasswordAction:indexPath item:item]];
         
-        [self handleDoubleTap:indexPath];
-    }
-    else if(self.tapCount == 0){
-        //This is the first tap. If there is no tap till tapTimer is fired, it is a single tap
-        self.tapCount = self.tapCount + 1;
-        self.tappedIndexPath = indexPath;
-        self.tapTimer = [NSTimer scheduledTimerWithTimeInterval:0.2 target:self selector:@selector(tapTimerFired:) userInfo:nil repeats:NO];
-    }
-    else if(![self.tappedIndexPath isEqual:indexPath]){
-        //tap on new row
-        self.tapCount = 0;
-        self.tappedIndexPath = indexPath;
-        if(self.tapTimer != nil){
-            [self.tapTimer invalidate];
-            self.tapTimer = nil;
+    return [UIMenu menuWithTitle:@""
+                           image:nil
+                      identifier:nil options:UIMenuOptionsDisplayInline
+                        children:ma];
+}
+
+- (UIAction*)getContextualMenuShowLargePasswordAction:(NSIndexPath*)indexPath item:(Node*)item {
+    __weak PickCredentialsTableViewController* weakSelf = self;
+    
+    return [ContextMenuHelper getItem:NSLocalizedString(@"browse_context_menu_show_password", @"Show Password")
+                           systemImage:@"eye"
+                               handler:^(__kindof UIAction * _Nonnull action) {
+        NSString* pw = [weakSelf dereference:item.fields.password node:item];
+        [self showLargeTextView:pw];
+    }];
+}
+
+- (void)showLargeTextView:(NSString*)password {
+    LargeTextViewController* vc = [LargeTextViewController fromStoryboard];
+    vc.string = password;
+    vc.colorize = self.model.metadata.colorizePasswords;
+    
+    [self presentViewController:vc animated:YES completion:nil];
+}
+
+- (UIMenu*)getContextualMenuCopyFieldToClipboard:(NSIndexPath*)indexPath item:(Node*)item {
+    NSMutableArray<UIMenuElement*>* ma = [NSMutableArray array];
+    
+    if ( !item.isGroup ) [ma addObject:[self getContextualMenuCopyToClipboardSubmenu:indexPath item:item]];
+
+    return [UIMenu menuWithTitle:NSLocalizedString(@"browse_context_menu_copy_other_field", @"Copy Other Field...")
+                           image:nil
+                      identifier:nil
+                         options:kNilOptions
+                        children:ma];
+}
+
+- (UIMenuElement*)getContextualMenuCopyToClipboardSubmenu:(NSIndexPath*)indexPath item:(Node*)item {
+    NSMutableArray<UIMenuElement*>* ma = [NSMutableArray array];
+    __weak PickCredentialsTableViewController* weakSelf = self;
+    
+    if ( !item.isGroup ) {
+        
+
+        if ( item.fields.email.length ) {
+            [ma addObject:[self getContextualMenuGenericCopy:@"generic_fieldname_email" item:item handler:^(__kindof UIAction * _Nonnull action) {
+                [weakSelf copyEmail:item];
+            }]];
         }
-    }
-}
+        
+        
 
-- (void)tapTimerFired:(NSTimer *)aTimer{
-    //timer fired, there was a single tap on indexPath.row = tappedRow
-    [self tapOnCell:self.tappedIndexPath];
-    
-    self.tapCount = 0;
-    self.tappedIndexPath = nil;
-    self.tapTimer = nil;
-}
+        if (item.fields.notes.length) {
+            [ma addObject:[self getContextualMenuGenericCopy:@"generic_fieldname_notes" item:item handler:^(__kindof UIAction * _Nonnull action) {
+                [weakSelf copyNotes:item];
+            }]];
+        }
 
-- (void)tapOnCell:(NSIndexPath *)indexPath  {
-    NSArray* arr = [self getDataSource];
-    if(indexPath.row >= arr.count) {
-        return;
-    }
-    Node *item = arr[indexPath.row];
-    if(item) {
-        if(!Settings.sharedInstance.doNotCopyOtpCodeOnAutoFillSelect && item.fields.otpToken) {
-            NSString* value = item.fields.otpToken.password;
-            if (value.length) {
-                UIPasteboard *pasteboard = [UIPasteboard generalPasteboard];
-                pasteboard.string = value;
-                NSLog(@"Copied TOTP to Pasteboard...");
+        
+        
+        NSMutableArray* customFields = [NSMutableArray array];
+        NSArray* sortedKeys = [item.fields.customFieldsNoEmail.allKeys sortedArrayUsingComparator:finderStringComparator];
+        for(NSString* key in sortedKeys) {
+            if ( ![NodeFields isTotpCustomFieldKey:key] ) {
+                [customFields addObject:[self getContextualMenuGenericCopy:key item:item handler:^(__kindof UIAction * _Nonnull action) {
+                    StringValue* sv = item.fields.customFields[key];
+                    
+                    NSString* value = [weakSelf dereference:sv.value node:item];
+                    
+                    [ClipboardManager.sharedInstance copyStringWithDefaultExpiration:value];
+                }]];
             }
         }
         
-        NSString* user = [self dereference:item.fields.username node:item];
-        NSString* password = [self dereference:item.fields.password node:item];
-        
-        //NSLog(@"Return User/Pass from Node: [%@] - [%@] [%@]", user, password, record);
-        
-        [self.rootViewController onCredentialSelected:user password:password];
+        if (customFields.count) {
+            [ma addObject:[UIMenu menuWithTitle:@""
+                                          image:nil
+                                     identifier:nil
+                                        options:UIMenuOptionsDisplayInline
+                                       children:customFields]];
+        }
     }
-    else {
-        NSLog(@"WARN: DidSelectRow with no Record?!");
-    }
+
+    return [UIMenu menuWithTitle:@""
+                           image:nil
+                      identifier:nil
+                         options:UIMenuOptionsDisplayInline
+                        children:ma];
 }
 
-- (void)handleDoubleTap:(NSIndexPath *)indexPath {
-    NSArray* arr = [self getDataSource];
-    if(indexPath.row >= arr.count) {
+- (void)copyEmail:(Node*)item {
+    [ClipboardManager.sharedInstance copyStringWithDefaultExpiration:[self dereference:item.fields.email node:item]];
+}
+
+- (void)copyNotes:(Node*)item {
+    [ClipboardManager.sharedInstance copyStringWithDefaultExpiration:[self dereference:item.fields.notes node:item]];
+}
+
+- (void)copyUsername:(Node*)item {
+    [ClipboardManager.sharedInstance copyStringWithDefaultExpiration:[self dereference:item.fields.username node:item]];
+}
+
+- (void)copyTotp:(Node*)item {
+    if(!item.fields.otpToken) {
         return;
     }
-    Node *item = arr[indexPath.row];
+    
+    [ClipboardManager.sharedInstance copyStringWithDefaultExpiration:item.fields.otpToken.password];
+}
 
-    UIPasteboard *pasteboard = [UIPasteboard generalPasteboard];
-    pasteboard.string = [self dereference:item.fields.username node:item];
+- (void)copyPassword:(Node *)item {
+    BOOL copyTotp = (item.fields.password.length == 0 && item.fields.otpToken);
     
-    NSLog(@"Fast Username Copy on %@", item.title);
+    [ClipboardManager.sharedInstance copyStringWithDefaultExpiration:copyTotp ? item.fields.otpToken.password : [self dereference:item.fields.password node:item]];
+}
+
+- (void)copyAllFields:(Node*)item {
+    NSMutableArray<NSString*>* fields = NSMutableArray.array;
     
-    [self.tableView deselectRowAtIndexPath:indexPath animated:YES];
+    [fields addObject:[self dereference:item.title node:item]];
+    [fields addObject:[self dereference:item.fields.username node:item]];
+    [fields addObject:[self dereference:item.fields.password node:item]];
+    [fields addObject:[self dereference:item.fields.url node:item]];
+    [fields addObject:[self dereference:item.fields.notes node:item]];
+    [fields addObject:[self dereference:item.fields.email node:item]];
+    
+    
+    
+    NSArray* sortedKeys = [item.fields.customFields.allKeys sortedArrayUsingComparator:finderStringComparator];
+    for(NSString* key in sortedKeys) {
+        if ( ![NodeFields isTotpCustomFieldKey:key] ) {
+            StringValue* sv = item.fields.customFields[key];
+            NSString *val = [self dereference:sv.value node:item];
+            [fields addObject:val];
+        }
+    }
+
+    
+    
+    NSArray<NSString*> *all = [fields filter:^BOOL(NSString * _Nonnull obj) {
+        return obj.length != 0;
+    }];
+    
+    NSString* allString = [all componentsJoinedByString:@"\n"];
+    [ClipboardManager.sharedInstance copyStringWithDefaultExpiration:allString];
+}
+
+- (UIAction*)getContextualMenuGenericCopy:(NSString*)locKey item:(Node*)item handler:(UIActionHandler)handler  {
+    return [ContextMenuHelper getItem:NSLocalizedString(locKey, nil) systemImage:@"doc.on.doc" handler:handler];
+}
+
+
+
+- (void)promptForFieldSelection:(Node*)item  {
+    NSMutableArray<NSString*>* fields = NSMutableArray.array;
+    NSMutableArray<NSString*>* values = NSMutableArray.array;
+    
+    if ( item.fields.username.length ) {
+        [fields addObject:NSLocalizedString(@"generic_fieldname_username", @"Username")];
+        [values addObject:[self dereference:item.fields.username node:item]];
+    }
+    
+    if ( item.fields.password.length ) {
+        [fields addObject:NSLocalizedString(@"generic_fieldname_password", @"Password")];
+        [values addObject:[self dereference:item.fields.password node:item]];
+    }
+    
+    if ( item.fields.otpToken ) {
+        [fields addObject:NSLocalizedString(@"generic_fieldname_totp", @"2FA Code")];
+        [values addObject:item.fields.otpToken.password];
+    }
+    
+    if ( item.fields.email.length ) {
+        [fields addObject:NSLocalizedString(@"generic_fieldname_email", @"Email")];
+        [values addObject:[self dereference:item.fields.email node:item]];
+    }
+    
+    if ( item.fields.url.length ) {
+        [fields addObject:NSLocalizedString(@"generic_fieldname_url", @"URL")];
+        [values addObject:[self dereference:item.fields.url node:item]];
+    }
+    
+    if (item.fields.notes.length) {
+        [fields addObject:NSLocalizedString(@"generic_fieldname_notes", @"Notes")];
+        [values addObject:[self dereference:item.fields.notes node:item]];
+    }
+    
+    
+    
+    NSArray<NSString*> *allKeys = item.fields.customFieldsNoEmail.allKeys;
+    NSArray* sortedKeys = self.model.metadata.customSortOrderForFields ? allKeys : [allKeys sortedArrayUsingComparator:finderStringComparator];
+    
+    for(NSString* key in sortedKeys) {
+        if (![NodeFields isTotpCustomFieldKey:key] &&
+            ![NodeFields isPasskeyCustomFieldKey:key] ) {
+            StringValue* sv = item.fields.customFields[key];
+            NSString* value = [self dereference:sv.value node:item];
+            
+            [fields addObject:key];
+            [values addObject:value];
+        }
+    }
+    
+    
+    
+    __weak PickCredentialsTableViewController* weakSelf = self;
+    [self promptForChoice:NSLocalizedString(@"select_field_to_insert_text", @"Select Field to Insert Text")
+                  options:fields
+     currentlySelectIndex:NSNotFound
+               completion:^(BOOL success, NSInteger selectedIndex) {
+        if ( !success ) {
+            return;
+        }
+        
+        NSString* text = values[selectedIndex];
+        
+        [weakSelf.presentingViewController dismissViewControllerAnimated:YES completion:^{
+            weakSelf.completion(NO, item, nil, text);
+        }];
+    }];
+}
+
+- (void)promptForChoice:(NSString*)title
+                options:(NSArray<NSString*>*)items
+   currentlySelectIndex:(NSInteger)currentlySelectIndex
+             completion:(void(^)(BOOL success, NSInteger selectedIndex))completion {
+    UIStoryboard* storyboard = [UIStoryboard storyboardWithName:@"SelectItem" bundle:nil];
+    UINavigationController* nav = (UINavigationController*)[storyboard instantiateInitialViewController];
+    SelectItemTableViewController *vc = (SelectItemTableViewController*)nav.topViewController;
+    vc.groupItems = @[items];
+    
+    if ( currentlySelectIndex != NSNotFound ) {
+        vc.selectedIndexPaths = @[[NSIndexSet indexSetWithIndex:currentlySelectIndex]];
+    }
+    else {
+        vc.selectedIndexPaths = nil;
+    }
+    
+    vc.onSelectionChange = ^(NSArray<NSIndexSet *> * _Nonnull selectedIndices) {
+        NSIndexSet* set = selectedIndices.firstObject;
+        [self.navigationController popViewControllerAnimated:YES];
+        completion(YES, set.firstIndex);
+    };
+    
+    vc.title = title;
+    [self.navigationController pushViewController:vc animated:YES];
 }
 
 @end

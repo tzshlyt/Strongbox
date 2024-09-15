@@ -3,12 +3,18 @@
 //  Strongbox
 //
 //  Created by Mark on 29/06/2019.
-//  Copyright © 2019 Mark McGuill. All rights reserved.
+//  Copyright © 2014-2021 Mark McGuill. All rights reserved.
 //
 
 #import <Foundation/Foundation.h>
+#import "WordList.h"
 
 NS_ASSUME_NONNULL_BEGIN
+
+//typedef enum {
+//    kBasic,
+//    kXkcd
+
 
 typedef NS_ENUM (NSInteger, PasswordGenerationAlgo) {
     kPasswordGenerationAlgorithmBasic,
@@ -20,8 +26,8 @@ typedef NS_ENUM (NSInteger, PasswordGenerationCharacterPool) {
     kPasswordGenerationCharacterPoolLower,
     kPasswordGenerationCharacterPoolNumeric,
     kPasswordGenerationCharacterPoolSymbols,
-//    kPasswordGenerationCharacterPoolEmoji,
-//    kPasswordGenerationCharacterPoolExtendedAscii,
+    kPasswordGenerationCharacterPoolLatin1Supplement,
+    kPasswordGenerationCharacterPoolEmojis,
 };
 
 typedef NS_ENUM (NSInteger, PasswordGenerationWordCasing) {
@@ -50,7 +56,7 @@ typedef NS_ENUM (NSInteger, PasswordGenerationSaltConfig) {
 @interface PasswordGenerationConfig : NSObject
 
 + (instancetype)defaults;
-+ (NSDictionary<NSString*, NSString*>*)wordLists;
++ (NSDictionary<NSString*, WordList*>*)wordListsMap;
 
 + (NSString*)getCasingStringForCasing:(PasswordGenerationWordCasing)casing;
 + (NSString*)characterPoolToPoolString:(PasswordGenerationCharacterPool)pool;
@@ -71,6 +77,16 @@ typedef NS_ENUM (NSInteger, PasswordGenerationSaltConfig) {
 @property PasswordGenerationWordCasing wordCasing;
 @property PasswordGenerationHackerifyLevel hackerify;
 @property PasswordGenerationSaltConfig saltConfig;
+
+
+
+@property BOOL dicewareAddNumber;
+@property BOOL dicewareAddUpper;
+@property BOOL dicewareAddLower;
+@property BOOL dicewareAddSymbols;
+@property BOOL dicewareAddLatin1Supplement;
+
+@property NSString* basicExcludedCharacters;
 
 @end
 
